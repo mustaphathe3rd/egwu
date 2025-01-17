@@ -39,6 +39,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'spotify',
     'channels',
+    #'spotify_games',
+    #'rest_framework'
 ]
 
 MIDDLEWARE = [
@@ -79,10 +81,15 @@ ASGI_APPLICATION = 'silleyBEnd.asgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'silley_ops_db',  # Database name
+        'USER': 'silley_user',    # Username
+        'PASSWORD': 'secure_password',  # Password
+        'HOST': 'localhost',      # Database host
+        'PORT': '5432',           # Database port (default for PostgreSQL)
     }
 }
+
 
 
 # Password validation
@@ -119,7 +126,8 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATICFILES_DIRS = [BASE_DIR / 'static']
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
@@ -131,11 +139,14 @@ from decouple import config
 SPOTIFY_CLIENT_ID = config("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = config("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = config("SPOTIFY_REDIRECT_URI")
+DISCOGS_TOKEN = config("YOUR_DISCOG_TOKEN")
 DISCOGS_CONSUMER_KEY =  config("CONSUMER_KEY")
 DISCOGS_CONSUMER_SECRET = config("CONSUMER_SECRET")
 DISCOGS_ACCESS_TOKEN = config("ACCESS_TKEN")
 DISCOGS_ACCESS_TOKEN_SECRET = config("ACCESS_TKEN_SECRET")
-
+LASTFM_API_KEY = config("API_KEY")
+GENIUS_API_TOKEN = config("GENIUS_API_TOKEN")
+OPENAI_API_KEY = config("OPENAI_API_KEY")
 
 
 import os
@@ -160,7 +171,7 @@ LOGGING = {
             "formatter": "simple",
         },
         "file": {
-            "level": "WARNING",
+            "level": "DEBUG",
             "class": "logging.handlers.RotatingFileHandler",
             "filename": os.path.join(BASE_DIR, "django_warning.log"),
             "maxBytes": 1024 * 1024 * 5,  # 5 MB
@@ -175,7 +186,7 @@ LOGGING = {
             "propagate": True,
         },
         "spotify": {  # Custom logger for your app
-            "handlers": ["console","file"],
+            "handlers": ["file"],
             "level": "DEBUG",
             "propagate": False,
         },

@@ -18,12 +18,14 @@ from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import path, include
 from spotify import views
+from django.views.generic import RedirectView
 
-def home(request):
-    return HttpResponse("Welcome to the Django SPotify Integration!")
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('spotify/', include('spotify.urls')),
-    path('', home, name='home'),
+    path('' , include('spotify.urls')),
+    #path('games/', include('spotify_games.urls')),
+    #path('spotify/', include('spotify.urls')),
+    #path('', home, name='home'),
+    path('favicon.ico', RedirectView.as_view(url='/static/favicon.ico', permanent=True)),
 ]

@@ -1,9 +1,11 @@
 import asyncio
+from .services import ArtistDetailsService, LyricsService 
+import time
 import logging
 from datetime import datetime, timedelta
 from functools import partial, wraps
-from typing import List, Dict, Tuple, Optional
-
+from typing import List, Dict, Tuple, Optional, Any, Callable
+from channels.db import database_sync_to_async
 import aiohttp
 import backoff
 import requests
@@ -12,22 +14,64 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.http import JsonResponse
+from aiohttp import ClientTimeout
 from django.utils import timezone
 from requests_oauthlib import OAuth1Session
 from spotipy import Spotify, SpotifyException, SpotifyOAuth
-
+from requests.exceptions import RequestException, Timeout
 from .constants import SCOPE
 from .models import (MostListenedAlbum, MostListenedArtist, MostListenedSongs,
-                     RelatedArtist, User)
+                      User)
 from .token_manager import TokenManager
+
+from tenacity import retry, stop_after_attempt, wait_exponential
+import ssl
+import certifi
 
 logger = logging.getLogger("spotify")
 
 token_manager = TokenManager()
 
-def should_update_data(last_updated):
-    # Check if last_updated is more than 7 days ago
-    return timezone.now() - last_updated > timedelta(weeks=1)
+ssl_context = ssl.create_default_context(cafile=certifi.where())
+class SpotifyBackoffHandler:
+    """Handles backoff configuration for spotify API calls"""
+    
+    @staticmethod
+    def get_backoff_decorator():
+        return backoff.on_exception(
+            backoff.expo,
+            (SpotifyException, ConnectionError, TimeoutError),
+            max_tries = 5,
+            max_time = 60,
+            giveup = lambda e: (
+                isinstance(e, SpotifyException) and
+                e.http_status in [400,401,403,404]
+            )
+        )
+        
+async def safe_spotify_request(func: Callable, *args:Any, **kwargs: Any) -> Any:
+    """Safely execute Spotify API requests with proper error handling"""
+    try:
+        return await asyncio.to_thread(func, *args, **kwargs)
+    except SpotifyException as e:
+        if e.http_status == 429:
+            retry_after = int(e.headers.get('Retry-After',5))
+            logger.warning(f"Rate limited by Spotify. Waiting {retry_after} seconds")
+            await asyncio.sleep(retry_after)
+            return await safe_spotify_request(func, *args, **kwargs)
+        elif e.http_status in [500, 502, 503, 504]:
+            logger.error(f"Spotify server error: {e}")
+            raise
+        else:
+            logger.error(f"Spotify API error: {e}")
+            raise
+    except ConnectionError as e:
+        logger.error(f"Connection error during Spotify request: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during  Spotify request: {e}")
+        raise
+
 def authenticate_user(request, code):
     sp_oauth = SpotifyOAuth(
         client_id=settings.SPOTIFY_CLIENT_ID,
@@ -42,7 +86,7 @@ def authenticate_user(request, code):
         
         if token_info and sp_oauth.is_token_expired(token_info):
             token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
-            if token_info:
+            if (token_info):
                 token_manager.store_token(request.session['user_id'], token_info)
         
         if not token_info:
@@ -81,31 +125,8 @@ def error_response(message, status=500):
         "error": message,
         "timestamp": datetime.now().isoformat()
     }, status=status)
-@sync_to_async
-def get_last_updated1(track_id,user):
-    return MostListenedSongs.objects.filter(
-        spotify_id=track_id,
-        user=user
-    ).values('last_updated').first()
-    
-@sync_to_async
-def bulk_create_tracks(track_updates):
-    """Fix field name from release_data to release_date"""
-    return MostListenedSongs.objects.bulk_create(
-        track_updates,
-        update_fields=[
-            "name", "artist", "album", "release_date",
-            "duration_seconds", "popularity", "genres"
-        ]
-    )
 
-@sync_to_async
-def get_last_updated2(album_id,user):
-    return MostListenedAlbum.objects.filter(
-        spotify_id=album_id,
-        user=user
-    ).values('last_updated').first()
-    
+        
 @sync_to_async
 def bulk_create_albums(album_id,user,album_data):
     return MostListenedAlbum.objects.update_or_create(
@@ -114,12 +135,25 @@ def bulk_create_albums(album_id,user,album_data):
         defaults=album_data,
          ) 
 
+@sync_to_async
+def create_or_update_track(tracks_data: Dict) -> Tuple[MostListenedSongs, bool]:
+    return MostListenedSongs.objects.update_or_create(
+        spotify_id=tracks_data['spotify_id'],
+        user=tracks_data['user'],
+        defaults=tracks_data['defaults']
+    )
+
+@SpotifyBackoffHandler.get_backoff_decorator()
 async def process_top_tracks(sp, user):
     try:
-        top_tracks = await asyncio.to_thread(sp.current_user_top_tracks, limit=50, time_range="medium_term")
+        top_tracks = await safe_spotify_request(sp.current_user_top_tracks, limit=50, time_range="medium_term")
+        if not top_tracks or "items" not in top_tracks:
+            logger.error("No top tracks data received")
+            return
+        
         unique_albums = {}
-        track_updates = []
-
+        lyrics_service = LyricsService()
+        
         for track in top_tracks["items"]:
             track_id = track["id"]
             album = track["album"]
@@ -145,6 +179,11 @@ async def process_top_tracks(sp, user):
             genres_list = ", ".join(genres) if genres else "Unknown"
             artist_names_list = ", ".join(artist_names)
             
+            url = await lyrics_service.search_song(track["name"],
+                                                   artist_names[0] if artist_names else None
+                                        )
+            lyrics = await lyrics_service.get_lyrics(url) if url else None
+            
             if album_id not in unique_albums:
                 unique_albums[album_id] = {
                     "spotify_id": album_id,
@@ -152,23 +191,34 @@ async def process_top_tracks(sp, user):
                     "artists": ", ".join(artist["name"] for artist in album["artists"]),
                     "release_date": release_date,
                     "total_tracks": album["total_tracks"],
+                    "image_url": (
+                        album.get("images", [{}])[1].get("url") 
+                        if album.get("images") 
+                        else None
+                    )
                 }
 
-            track_data = MostListenedSongs(
-                spotify_id=track_id,
-                user=user,
-                name=track["name"],
-                artist=artist_names_list,
-                album=album["name"],
-                release_date=release_date,
-                duration_seconds=round(track["duration_ms"]/1000, 2),
-                popularity=track["popularity"],
-                genres=genres_list,  
-            )
-            track_updates.append(track_data)
-            
-        if track_updates:
-            await bulk_create_tracks(track_updates)
+            track_data = {
+                'spotify_id': track_id,
+                'user': user,
+                'defaults': {
+                    "name": track["name"],
+                    "artist": artist_names_list,
+                    "album": album["name"],
+                    "release_date": release_date,
+                    "duration_seconds": convert_ms_to_seconds(track.get("duration_ms", 0)),
+                    "popularity": track["popularity"],
+                    "genres": genres_list,
+                    "lyrics": lyrics,
+                    "image_url": (
+                        track.get("images", [{}])[1].get("url") 
+                        if track.get("images") and len(track.get("images", [])) > 1
+                        else None
+                    )   
+                }
+            }
+         
+            await create_or_update_track(track_data)
 
         for album_id, album_data in unique_albums.items():
             await bulk_create_albums(album_id, user, album_data)
@@ -176,15 +226,17 @@ async def process_top_tracks(sp, user):
     except Exception as e:
         logger.error(f"Error processing tracks: {e}", exc_info=True)
         raise
-        
-@backoff.on_exception(backoff.expo, requests.RequestException, max_tries=3)
+@backoff.on_exception(
+    backoff.expo,
+    (RequestException,Timeout),
+    max_tries=3,
+    max_time=30
+)
 async def fetch_musicbrainz_data(artist_name: str) -> dict:
     """Fetch artist data from MusicBrainz with caching and retries"""
-    cache_key = f"musicbrainz_artist_{artist_name}"
-    cached_data = cache.get(cache_key)
-    if (cached_data):
-        return cached_data
-
+    if not artist_name:
+        return None
+        
     headers = {
         'User-Agent': 'SilleyApp/1.0 (your@email.com)',
         'Accept': 'application/json'
@@ -193,124 +245,50 @@ async def fetch_musicbrainz_data(artist_name: str) -> dict:
     url = "https://musicbrainz.org/ws/2/artist/"
     params = {
         'query': f'artist:{artist_name}',
-        'fmt': 'json'
+        'fmt': 'json',
+        'limit': 1,  # Only need first result
+        'inc': 'aliases+tags'  # Include essential data only
     }
     
     try:
-        response = await asyncio.to_thread(
-            requests.get,
-            url,
-            params=params,
+        async with aiohttp.ClientSession(
             headers=headers,
-            timeout=10
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        if data.get("artists"):
-            result = data["artists"][0]
-            cache.set(cache_key, result, timeout=3600)
-            return result
+            timeout=ClientTimeout(total=30),
+            connector=aiohttp.TCPConnector(ssl=ssl_context)
+        )as session:
+            async with session.get(url, params=params)as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data.get("artists",[{}])[0] if data.get("artists") else None
             
-    except requests.RequestException as e:
+    except asyncio.TimeoutError as e:
+        logger.error(f"MusicBrainz API timeout for {artist_name}: {e}")
+    except Exception as e:
         logger.error(f"MusicBrainz API error for {artist_name}: {e}")
         
     return None
 
-class DiscogsClient:
-    def __init__(self):
-        self.oauth = OAuth1Session(
-            settings.DISCOGS_CONSUMER_KEY,
-            client_secret=settings.DISCOGS_CONSUMER_SECRET,
-            resource_owner_key=settings.DISCOGS_ACCESS_TOKEN,
-            resource_owner_secret=settings.DISCOGS_ACCESS_TOKEN_SECRET
-        )
-        self.base_url = "https://api.discogs.com"
-
-    @backoff.on_exception(backoff.expo, requests.RequestException, max_tries=3)
-    async def fetch_artist_data(self, artist_name: str) -> dict:
-        cache_key = f"discogs_artist_{artist_name}"
-        cached_data = cache.get(cache_key)
-        if cached_data:
-            return cached_data
-
-        url = f"{self.base_url}/database/search"
-        params = {"q": artist_name, "type": "artist"}
-        headers = {"User-Agent": "YourApp/1.0"}
-
-        try:
-            response = await asyncio.to_thread(
-                self.oauth.get,
-                url,
-                params=params,
-                headers=headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            if data.get("results"):
-                result = data["results"][0]
-                cache.set(cache_key, result, timeout=3600)
-                return result
-            logger.info(f"No results found for artist: {artist_name}")
-            
-        except requests.RequestException as e:
-            logger.error(f"Discogs API error: {e}", exc_info=True)
-            
-        return None
-
-discogs_client = DiscogsClient()
-
-async def fetch_discogs_data(artist_name: str) -> dict:
-    return await discogs_client.fetch_artist_data(artist_name)
-
-@backoff.on_exception(backoff.expo, Exception, max_tries=3)
+@SpotifyBackoffHandler.get_backoff_decorator()
 async def fetch_most_popular_song(sp, artist_id: str) -> str:
     """Fetch artist's most popular song with caching"""
-    cache_key = f"popular_song_{artist_id}"
-    cached_song = cache.get(cache_key)
-    if cached_song:
-        return cached_song
-        
+
     try:
-        top_tracks = await asyncio.to_thread(sp.artist_top_tracks, artist_id)
+        top_tracks = await safe_spotify_request(sp.artist_top_tracks, artist_id)
         if top_tracks and top_tracks.get("tracks"):
             song = top_tracks["tracks"][0]["name"]
-            cache.set(cache_key, song, timeout=3600)
+            
             return song
     except Exception as e:
         logger.error(f"Error fetching popular song for {artist_id}: {e}")
     return None
 
-@backoff.on_exception(backoff.expo, Exception, max_tries=3)
-async def fetch_related_artists(sp, artist_id: str) -> list:
-    """Fetch related artists with caching"""
-    cache_key = f"related_artists_{artist_id}"
-    cached_artists = cache.get(cache_key)
-    if cached_artists:
-        return cached_artists
-        
-    try:
-        related = await asyncio.to_thread(sp.artist_related_artists, artist_id)
-        if related and related.get("artists"):
-            artists = related["artists"]
-            cache.set(cache_key, artists, timeout=3600)
-            return artists
-    except Exception as e:
-        logger.error(f"Error fetching related artists for {artist_id}: {e}")
-    return []
 
-@backoff.on_exception(backoff.expo, Exception, max_tries=3)
+@SpotifyBackoffHandler.get_backoff_decorator()
 async def get_artist_album_count(sp, artist_name: str) -> int:
     """Get total album count for artist with caching"""
-    cache_key = f"album_count_{artist_name}"
-    cached_count = cache.get(cache_key)
-    if cached_count is not None:
-        return cached_count
-        
+         
     try:
-        results = await asyncio.to_thread(
+        results = await safe_spotify_request(
             sp.search, q=artist_name, type='artist', limit=1
         )
         
@@ -319,148 +297,300 @@ async def get_artist_album_count(sp, artist_name: str) -> int:
             
         artist_id = results['artists']['items'][0]['id']
         albums = await asyncio.to_thread(
-            sp.artist_albums, artist_id, limit=1
+            sp.artist_albums, artist_id,album_type='album', limit=1
         )
+        logger.debug(f"Albums response for {artist_name}: {albums}")
         count = albums['total']
-        cache.set(cache_key, count, timeout=3600)
+        
         return count
     except Exception as e:
         logger.error(f"Error fetching album count for {artist_name}: {e}")
         return 0
 
-@sync_to_async
-def get_last_updated(artist_id, user):
-    return MostListenedArtist.objects.filter(
-        spotify_id=artist_id, 
-        user=user
-    ).values('last_updated').first()
-
-@sync_to_async
-def bulk_create_artists(artists: List[MostListenedArtist]) -> List[MostListenedArtist]:
-    """Bulk create or update multiple artist records.
-    
-    Args:
-        artists: List of MostListenedArtist instances to create/update
-        
-    Returns:
-        List of created/updated MostListenedArtist instances
-        
-    Note:
-        Only updates specific fields to avoid overwriting other data
-    """
-    return MostListenedArtist.objects.bulk_create(
-        artists,
-        update_fields=["name", "popularity", "genres", "followers"]
-    )
-
 async def fetch_artist_metadata(
-    sp: Spotify, 
-    artist_name: str, 
+    sp: Spotify,
+    artist_name: str,
     artist_id: str
-) -> Tuple[Dict, Dict, str, List, int]:
-    """Fetch all metadata for an artist concurrently from multiple sources.
+) -> Optional[Tuple[Dict, Tuple[int, Optional[str]], str, int]]:
+    """
+    Fetch all metadata for an artist concurrently from multiple sources.
     
-    Args:
-        sp: Authenticated Spotify client instance
-        artist_name: Name of the artist to fetch metadata for
-        artist_id: Spotify ID of the artist
-        
     Returns:
         Tuple containing:
         - MusicBrainz artist data (Dict)
-        - Discogs artist data (Dict)  
+        - Discogs artist data (Tuple[int, Optional[str]]) - (member_count, debut_year)
         - Most popular song name (str)
-        - Related artists list (List)
         - Total album count (int)
-        
-    Note:
-        Uses asyncio.gather to fetch data concurrently for better performance
+        Or None if fetching fails
     """
-    tasks = [
-        # MusicBrainz data for biographical info
-        asyncio.to_thread(fetch_musicbrainz_data, artist_name),
+    try:
+        # Create and execute tasks
+        musicbrainz_task = fetch_musicbrainz_data(artist_name)
+        discogs_task = get_artist_info(artist_name)
+        popular_song_task = fetch_most_popular_song(sp, artist_id)
+        album_count_task = get_artist_album_count(sp, artist_name)
         
-        # Discogs data for member count and additional metadata
-        discogs_client.fetch_artist_data(artist_name),  # Already async
+        results = await asyncio.gather(
+            musicbrainz_task,
+            discogs_task,
+            popular_song_task,
+            album_count_task,
+            return_exceptions=True
+        )
         
-        # Spotify data for popularity metrics
-        fetch_most_popular_song(sp, artist_id),
-        fetch_related_artists(sp, artist_id),
-        get_artist_album_count(sp, artist_name)
-    ]
-    return await asyncio.gather(*tasks)
-
+        # Check for exceptions in results
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Task {idx} failed with error: {result}")
+                return None
+        
+        # Unpack results
+        musicbrainz_data, discogs_tuple, most_popular_song, album_count = results
+        
+        # Verify discogs_tuple structure
+        if not isinstance(discogs_tuple, tuple) or len(discogs_tuple) != 2:
+            logger.error(f"Invalid discogs data structure for {artist_name}")
+            return None
+            
+        return (
+            musicbrainz_data,
+            discogs_tuple,  # Keep as tuple, will unpack later
+            most_popular_song,
+            album_count
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in fetch_artist_metadata for {artist_name}: {e}", exc_info=True)
+        return None
 async def process_artist_years(musicbrainz_data):
     """Fix coroutine issue by awaiting musicbrainz_data if it's a coroutine"""
     if asyncio.iscoroutine(musicbrainz_data):
         musicbrainz_data = await musicbrainz_data
         
     birth_year = None
-    debut_year = None
-    
+
     if musicbrainz_data:
         if musicbrainz_data.get("type") == "Person":
             birth_year = (musicbrainz_data.get("life-span", {})
                          .get("begin", "")[:4] or None)
-        
-        first_release = musicbrainz_data.get("first-release-date", "")[:4]
-        first_recording = musicbrainz_data.get("first-recording-date", "")[:4]
-        debut_year = first_release or first_recording or None
     
-    return birth_year, debut_year
+    return birth_year
 
-@backoff.on_exception(backoff.expo, Exception, max_tries=3)
+@sync_to_async
+def create_or_update_artist(artist_data: Dict):
+    """Create or update artist with sync_to_async wrapper."""
+    logger.debug("Entering create_or_update_artist")
+    logger.debug(f"Artist data:{artist_data['spotify_id']}")
+    
+    return MostListenedArtist.objects.update_or_create(
+            spotify_id = artist_data['spotify_id'],
+            user = artist_data['user'],
+            defaults=artist_data['defaults'],
+        )
+           
+@SpotifyBackoffHandler.get_backoff_decorator()
 async def process_top_artists(sp, user):
     try:
-        sp.requests_timeout = 20
-        top_artists = await asyncio.to_thread(
-            partial(sp.current_user_top_artists, limit=50, time_range="medium_term")
+        top_artists = await safe_spotify_request(
+            sp.current_user_top_artists,
+            limit=50,
+            time_range="medium_term"
         )
         
-        artist_updates = []
-        related_artists_to_create = []
-
+        if not top_artists or "items" not in top_artists:
+            logger.error("No top artists data received")
+            return
+        
         for artist in top_artists["items"]:
-            artist_id = artist["id"]
-            metadata = await fetch_artist_metadata(sp, artist["name"], artist_id)
-            musicbrainz_data, discogs_data, most_popular_song, related_artists, album_count = metadata
-            birth_year, debut_year = await process_artist_years(musicbrainz_data)
-            
-            artist_data = MostListenedArtist(
-                spotify_id=artist_id,
-                user=user,
-                name=artist["name"],
-                popularity=artist["popularity"],
-                genres=", ".join(artist["genres"]),
-                followers=artist["followers"]["total"],
-                debut_year=debut_year,
-                birth_year=birth_year,
-                num_albums=album_count,
-                members=len(discogs_data.get("members", [])) if discogs_data else 0,
-                country=musicbrainz_data.get("country") if musicbrainz_data else None,
-                gender=musicbrainz_data.get("gender") if musicbrainz_data else None,
-                most_popular_song=most_popular_song,
-            )
-            artist_updates.append(artist_data)
-            
-            if related_artists:
-                related_artists_to_create.extend([
-                    RelatedArtist(
-                        artist=artist_data,
-                        related_artist_id=ra["id"],
-                        related_artist_name=ra["name"]
-                    )
-                    for ra in related_artists
-                ])
+            try:
+                artist_id = artist["id"]
+                logger.debug(f"Processing artist: {artist_id}")
+                
+                metadata = await fetch_artist_metadata(sp, artist["name"], artist_id)
 
-        if artist_updates:
-            async with transaction.atomic():
-                await bulk_create_artists(artist_updates)
-                if related_artists_to_create:
-                    await sync_to_async(RelatedArtist.objects.bulk_create)(
-                        related_artists_to_create
-                    )
+                if not metadata or not isinstance(metadata, tuple) or len(metadata) < 4:
+                        logger.error(f"Invalid metadata for artist {artist['name']}: {metadata}")
+                        continue
+                logger.debug(f"fetch_artist_metadata returned: {metadata}")
+
+                
+                try:
+                    musicbrainz_data, discogs_data, most_popular_song, album_count = metadata
+                    if not isinstance(discogs_data, (tuple, list)) or len(discogs_data) != 2:
+                        raise ValueError(f"Invalid discogs_data: {discogs_data}")
+                    logger.debug(f"fetch returned:{musicbrainz_data}|| {discogs_data}|| {most_popular_song}|| {album_count}")
+                    members_count, debut_year = discogs_data
+
+                except ValueError as e:
+                    logger.error(f"Error unpacking metadata for artist {artist['name']}: {e}")
+                    continue
+                
+                birth_year = await process_artist_years(musicbrainz_data) 
+                logger.debug(f"birth_year: {birth_year}")
+                
+                try:
+                    biography = await get_artist_bio(artist["name"])
+                    logger.debug(f"biography type:{type(biography)}")
+                    logger.debug(f"Biography fetched: {biography}")
+                except Exception as e:
+                    logger.error(f"Error getting biography for {artist['name']}: {e}")
+                    biography = None
+
+                
+                artist_data = {
+                    'spotify_id': artist_id,
+                    'user': user,
+                    'defaults': {
+                        "name": artist["name"],
+                        "popularity": artist["popularity"],
+                        "genres": ", ".join(artist["genres"]),
+                        "followers": artist["followers"]["total"],
+                        "debut_year": debut_year,
+                        "birth_year": birth_year,
+                        "num_albums": album_count,
+                        "members": members_count,
+                        "country": musicbrainz_data.get("country") if musicbrainz_data else None,
+                        "gender": musicbrainz_data.get("gender") if musicbrainz_data else None,
+                        "most_popular_song": most_popular_song,
+                        "biography":biography,
+                        "image_url": (
+                        artist.get("images", [{}])[1].get("url") 
+                        if artist.get("images") 
+                        else None
+                    )   
+                    }
+                }
+                try:
+                    logger.debug(f"Before create_or_update_artist call for {artist_id}")
+                    logger.debug(f"Type of create_or_update_artist: {type(create_or_update_artist)}")
                     
+                    
+                    await create_or_update_artist(artist_data)
+                    
+                except Exception as e:
+                    logger.error(
+                        f"Database error for artist {artist_id}: {str(e)}",
+                        exc_info=True,
+                        stack_info=True
+                    )
+                    continue
+                
+            except Exception as e:
+                logger.error(f"Error updating artist {artist.get('id', 'unknown')}: {e}")
+                continue
+                
     except Exception as e:
-        logger.error(f"Error processing artists: {e}", exc_info=True)
+        logger.error(f"Error processing top artists: {e}", exc_info=True)
         raise
+    
+async def fetch_discogs_data(url: str, headers: Dict, params: Optional[Dict] = None) -> Optional[Dict]:
+    """Async helper function to fetch data from Discogs API with SSL verification."""
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    conn = aiohttp.TCPConnector(ssl=ssl_context)
+    
+    async with aiohttp.ClientSession(connector=conn) as session:
+        try:
+            async with session.get(url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    return await response.json()
+                logger.error(f"Error fetching data from {url}: {response.status}")
+                return None
+        except Exception as e:
+            logger.error(f"Request error for {url}: {e}")
+            return None
+
+@backoff.on_exception(backoff.expo, Exception, max_tries=3)
+async def get_artist_info(artist_name: str) -> Tuple[Optional[int], Optional[str]]:
+    """Async function to fetch artist members count and debut year."""
+    BASE_URL = "https://api.discogs.com/"
+    headers = {
+        "Authorization": f"Discogs token={settings.DISCOGS_TOKEN}",
+        "User-Agent": "stats_mine/1.0",
+    }
+    
+    try:
+        search_data = await fetch_discogs_data(
+            f"{BASE_URL}database/search",
+            headers=headers,
+            params={"q": artist_name, "type": "artist"}
+        )
+        
+        if not search_data or not search_data.get("results"):
+            return 0, None
+            
+        specific_artist = next(
+            (r for r in search_data["results"] 
+             if r.get("title", "").lower() == artist_name.lower()),
+            None
+        )
+        
+        if not specific_artist:
+            return 0, None
+            
+        artist_data = await fetch_discogs_data(
+            specific_artist["resource_url"],
+            headers
+        )
+        
+        if not artist_data:
+            return 0, None
+            
+        member_count = len(artist_data.get("members", []))
+        
+        releases_data = await fetch_discogs_data(
+            artist_data.get("releases_url"),
+            headers,
+            params={"sort": "year", "sort_order": "asc"}
+        )
+        
+        debut_year = None
+        if releases_data and releases_data.get("releases"):
+            debut_year = releases_data["releases"][0].get("year")
+            
+        return member_count, debut_year
+        
+    except Exception as e:
+        logger.error(f"Error getting artist info for {artist_name}: {e}")
+        return 0, None
+
+def convert_ms_to_seconds(ms: int) -> float:
+    if not isinstance(ms, (int, float)):
+        raise ValueError("Duration must be a number")
+    return round(float(ms)/1000, 2)
+
+def rate_limit_handler() -> Callable:
+    """Decorator to handle rate limiting for Discogs API."""
+    def decorator(func: Callable) -> Callable:
+        last_request_time = 0
+        min_request_interval = 1.0  # 1 second between requests
+        
+        @wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            nonlocal last_request_time
+            
+            # Check if we need to wait
+            now = time.time()
+            time_since_last = now - last_request_time
+            if time_since_last < min_request_interval:
+                await asyncio.sleep(min_request_interval - time_since_last)
+            
+            try:
+                response = await func(*args, **kwargs)
+                last_request_time = time.time()
+                return response
+                
+            except Exception as e:
+                if '429' in str(e):
+                    retry_after = int(e.response.headers.get('Retry-After', 10))
+                    logger.warning(f"Rate limited. Waiting {retry_after} seconds")
+                    await asyncio.sleep(retry_after)
+                    return await wrapper(*args, **kwargs)
+                raise
+                
+        return wrapper
+    return decorator
+
+async def get_artist_bio(artist_name: str) -> str:
+    service = ArtistDetailsService()
+    biography = await service.get_artist_details(artist_name)
+    return biography

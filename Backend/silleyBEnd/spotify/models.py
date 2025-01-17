@@ -22,8 +22,11 @@ class MostListenedSongs(models.Model):
     artist = models.CharField(max_length=255)
     album = models.CharField(max_length=255)
     release_date = models.DateField(null=True, blank=True)
-    duration_seconds = models.IntegerField()
+    duration_seconds = models.FloatField()
     popularity = models.IntegerField(default=0)
+    lyrics = models.TextField(blank=True, null=True)
+    image_url = models.URLField(max_length=500, null=True, blank=True)
+    display_url = models.URLField(max_length=500, null=True, blank=True)
     
     
     
@@ -44,6 +47,10 @@ class MostListenedArtist(models.Model):
     country = models.CharField(max_length=255, null=True, blank=True)
     gender = models.CharField(max_length=255, null=True, blank=True)
     most_popular_song = models.CharField(max_length=255, null=True, blank=True)
+    most_popular_song_id = models.CharField(max_length=255, null=True)
+    most_popular_song_url = models.URLField(max_length=255, null=True, blank=True)
+    image_url = models.URLField(max_length=500, null=True, blank=True)
+    biography = models.TextField(blank=True, null=True)
     
   
     
@@ -57,46 +64,10 @@ class MostListenedAlbum(models.Model):
     artists = models.CharField(max_length=255)
     release_date = models.DateField(null=True, default=timezone.now)
     total_tracks = models.IntegerField(default=0)
+    image_url = models.URLField(max_length=500, null=True, blank=True)
     
    
     
     def __str__(self) -> str:
         return f"{self.name}"
     
-class RelatedArtist(models.Model):
-    artist = models.ForeignKey(MostListenedArtist, on_delete=models.CASCADE, related_name="related_artists")
-    related_artist_id = models.CharField(max_length=255)
-    related_artist_name = models.CharField(max_length=255)
-
-class TopTracksCountry(models.Model):
-    spotify_id = models.CharField(max_length=255, unique=True)
-    name = models.CharField(max_length=255)
-    artist = models.CharField(max_length=255)
-    album = models.CharField(max_length=255)
-    genres = models.TextField(blank=True, null=True)
-    duration_seconds = models.IntegerField()
-    release_date = models.DateField(null=True, blank=True)
-    popularity = models.IntegerField(default=0)
-    country_code = models.CharField(max_length=2)
-    
-
-    def __str__(self):
-        return f"{self.name} - {self.artist} ({self.country_code})"
-
-class GlobalTopTracks(models.Model):
-    spotify_id = models.CharField(max_length=255, unique=True)
-    name = models.CharField(max_length=255)
-    artist = models.CharField(max_length=255)
-    album = models.CharField(max_length=255)
-    genres = models.TextField(blank=True, null=True)
-    duration_seconds = models.IntegerField()
-    release_date = models.DateField()
-    popularity = models.IntegerField(default=0)
-    rank = models.IntegerField()
-    
-
-    class Meta:
-        ordering = ['rank']
-
-    def __str__(self):
-        return f"{self.rank}. {self.name} by {self.artist}"
