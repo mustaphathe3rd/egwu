@@ -1,6 +1,6 @@
 from .base import BaseGame
 from ..services.ai_service import AIService
-from ..services.cache_service import CacheService
+from ..services.cache_service import GameCacheService
 from spotify.models import MostListenedSongs
 import random
 
@@ -8,10 +8,24 @@ class CrosswordGame(BaseGame):
     def __init__(self, session):
         super().__init__(session)
         self.ai_service = AIService()
-        self.cache_service = CacheService()
+        self.cache_service = GameCacheService()
         
     def initialize_game(self):
-        song = self.get_random_songs(1)[0]
+        
+        # check cache first
+        cache_key = f"crossword_game_{self.session.id}"
+        cached_game = self.cache_service.get_game_session(
+            self.session.user.id,
+            cache_key
+        )
+        if cached_game:
+            return cached_game
+        
+        song = self._get_valid_song()
+        if not song:
+            return {
+                'error': 'No songs with lyrics available. Try refreshing your music data.'
+            }
         
         # Setup playback for the song
         self.setup_playback(
@@ -25,7 +39,7 @@ class CrosswordGame(BaseGame):
         # Generate crossword puzzle using AI
         puzzle_data = self.ai_service.generate_crossword(song.lyrics)
         
-        return {
+        game_state = {
             'song_data': {
                 'name': song.name,
                 'artist': song.artist,
@@ -35,6 +49,23 @@ class CrosswordGame(BaseGame):
             },
             'puzzle_data': puzzle_data
         }
+        
+        # Cache the game state
+        self.cache_service.cache_game_session(
+            self.session.user.id,
+            cache_key,
+            game_state
+        )
+        
+        return game_state
+    
+    def _get_valid_song(self):
+        """Get a song with non-null, valid lyrics."""
+        return self.get_random_songs(1).filter(
+            lyrics_isnull=False
+        ).exclude(
+            lyrics_in=['', 'No lyrics available']
+        ).first()
     
     def validate_answer(self, answer_data):
         current_state = self.state.current_state

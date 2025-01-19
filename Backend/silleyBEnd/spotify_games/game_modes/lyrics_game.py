@@ -1,16 +1,33 @@
 from .base import BaseGame
 from ..services.ai_service import AIService
+from ..services.cache_service import GameCacheService
 import random
-
-
+from difflib import SequenceMatcher
+from datetime import timezone
 class LyricsGame(BaseGame):
     def __init__(self, session):
         super().__init__(session)
         self.ai_service = AIService()
+        self.cache_service = GameCacheService()
         
         
     def initialize_game(self, input_type='text'):
-        songs = self.get_random_songs(7) #Get 5 random songs for the session
+        #check cache first
+        cache_key = f"luyrics_game_{self.session.id}"
+        cached_game = self.cache_service.get_game_session(
+            self.session.user.id,
+            cache_key
+        )
+        if cached_game:
+            return cached_game
+        
+        # Get valid songs with non-null lyrics
+        songs = self._get_valid_songs(7) 
+        if not songs:
+            return {
+                'error': 'Not enough songs with lyrics available. Try refreshing your music data.'
+            }
+            
         current_song = songs[0]
         
         #Setup playback for current song
@@ -25,7 +42,7 @@ class LyricsGame(BaseGame):
         #Generate lyrics challenge
         challenge = self._generate_lyrics_challenge(current_song.lyrics)
         
-        return{
+        game_state = {
             'song_data': {
                 'name': current_song.name,
                 'artist': current_song.artist,
@@ -36,6 +53,23 @@ class LyricsGame(BaseGame):
             'challenge': challenge,
             'input_type': input_type
         }
+        
+        # Cache the game state
+        self.cache_service.cache_game_session(
+            self.session.user.id,
+            cache_key,
+            game_state
+        )
+        
+        return game_state
+    
+    def _get_valid_songs(self, count):
+        """Get songs that have non-null lyrics."""
+        return self.get_random_songs(count * 2).filter(
+            lyrics_isnull = False
+        ).exclude(
+            lyrics_in=['', 'No lyrics available']
+        )[:count]
         
     def _generate_lyrics_challenge(self, lyrics):
         words = lyrics.split()
@@ -50,3 +84,106 @@ class LyricsGame(BaseGame):
             'challenge_lyrics': challenge_lyrics,
             'missing_portion': missing_portion
         }
+        
+    def validate_answer(self, user_answer: str) -> dict:
+        """
+        Validate the user's answer against the correct lyrics.
+        
+        Args:
+            user_answer (str): The user's submitted answer
+            
+        Returns:
+            dict: Validation results including score, feedback, and game state
+        """
+        
+        #Get current gamr state from cache
+        cache_key = f"lyrics_game_{self.session.id}"
+        current_game = self.cache_sevice.get_game_session(
+            self.session.user.id,
+            cache_key
+        )
+        
+        if not current_game:
+            return{
+                'error': 'Game session not found',
+                'is_correct': False
+            }
+            
+        correct_lyrics = current_game['challenge']['missing_portion']
+        
+        # Calculate similarity ratio between user answer and correct lyrics
+        similarity = SequenceMatcher(
+            None,
+            user_answer.lower().strip(),
+            correct_lyrics.lower().strip()
+        ).ratio()
+        
+        # Determine if answer is correct (90% similarity threshold)
+        is_correct = similarity >= 0.9
+        
+        # Calculate score based on similarity
+        score = int(similarity * 100) if is_correct else 0
+        
+        # Update session if correct
+        if is_correct:
+            self.session.score = score
+            self.session.completed = True
+            self.session.end_time = timezone.now()
+            self.session.save()
+            
+            # CLear cache after completion
+            self.cache_service.clear_user_game_cache(self.session.user.id)
+            
+        # Prepare feedback based on similarity
+        feedback = self._generate_feedback(similarity, correct_lyrics)
+        
+        return {
+            'is_correct': is_correct,
+            'score': score,
+            'feedback': feedback,
+            'correct_lyrics': correct_lyrics if is_correct else None,
+            'similarity': round(similarity * 100, 2),
+            'game_completed': self.session.completed
+        }
+        
+    def _generate_feedback(self, similarity: float, correct_lyrics: str) -> str:
+        """
+        Generate appropriate feedback based on answer similarity.
+        
+        Args:
+            similarity (float): Similarity ratio between 0 and 1
+            correct_lyrics (str): The correct lyrics
+        
+        Returns:
+            str: Feedback message for the user
+        """
+        if similarity >= 0.9:
+            return "Perfect! You got the lyrics exactly right!"
+        elif similarity >= 0.8:
+            return "Very close! Just a few small differences."
+        elif similarity >= 0.6:
+            return "You've got some of it right, but there are significant differences."
+        elif similarity >= 0.4:
+            return "You're on the right track, but quite different from the actual lyrics."
+        else:
+            return "These lyrics are quite different from the correct ones. Try again!"
+        
+    def validate_voice_answer(self, audio_text: str) -> dict:
+        """
+        Validate answer from voice input (when game is in voice mode).
+        
+        Args:
+            audio_text (str): Transcribed text from voice input
+            
+        Returns:
+            dict: Validation results including score and feedback
+        """     
+        # Voice input might have more variation, so we use a lower threshold
+        result = self.validate_answer(audio_text)
+        
+        # Adjust similarity threshold for voice input
+        if not result['is_correct'] and result['similarity'] >= 75: # More lenient for voice
+            result['is_correct'] = True
+            result['score'] = int(result['similarity'])
+            
+        return result

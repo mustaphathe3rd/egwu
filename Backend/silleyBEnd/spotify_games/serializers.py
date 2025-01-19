@@ -20,4 +20,41 @@ class GameStateSerializer(serializers.Serializer):
     current_state = serializers.JSONField()
     metadata = serializers.DictField(required=False)
     
+class ArtistGuessInputSerializer(serializers.Serializer):
+    artist_name = serializers.CharField(max_length=255, required=True)
     
+class ArtistGuessFeedbackSerializer(serializers.Serializer):
+    status = serializers.CharField()
+    message = serializers.CharField()
+    guessed_value = serializers.CharField()
+    
+class ArtistGuessAttributesSerializer(serializers.Serializer):
+    debut_year = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    birth_year = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    num_albums = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    members_count = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    gender = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    popularity = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    country = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    genre = serializers.DictField(child=ArtistGuessFeedbackSerializer())
+    
+class ArtistInfoSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    image_url = serializers.URLField()
+    favorite_song = serializers.DIctField(required=False)
+    
+class GuessResponseSerializer(serializers.Serializer):
+    attributes = ArtistGuessAttributesSerializer()
+    is_correct = serializers.BooleanField()
+    animation_effects = serializers.ListField(child=serializers.DictField())
+    artist_info = ArtistInfoSerializer()
+    target_artist = ArtistInfoSerializer(required=False)
+    
+class SessionStateSerializer(serializers.Serializer):
+    tries_left = serializers.IntegerField()
+    is_complete = serializers.BooleanField()
+    score = serializers.IntegerField()
+    
+class GuessSubmissionResponseSerializer(serializers.Serializer):
+    feedback = GuessResponseSerializer()
+    session_state = SessionStateSerializer()

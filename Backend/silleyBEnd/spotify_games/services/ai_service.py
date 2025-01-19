@@ -2,11 +2,16 @@ from typing import Dict, List, Any
 import openai
 from django.conf import settings
 from tenacity import retry, stop_after_attempt, wait_exponential
+import logging
+import json
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 class AIService:
     def __init__(self):
         self.openai = openai
-        settings.OPENAI_API_KEY
+        self.openai.api_key = settings.OPENAI_API_KEY
+        self.rate_limit = 100 #requests per hour
         
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def generate_crossword(self, lyrics: str) -> Dict[str, Any]:
@@ -42,16 +47,26 @@ class AIService:
             }}
         }}
         """
+        try:
+            response = self.openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7
+            )
+            
+            return self._process_crossword_response(response.choices[0].message.content)
         
-        response = self.openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
+        except Exception as e:
+            logger.error(f"Error generating crossword: {e}")
+            return {"error": "Failed to generate crossword"} 
+    
+    def _process_crossword_response(self, response_content: str) -> Dict[str, Any]:
+        try:
+            return json.loads(response_content)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse crossword response: {e}")
+            return {"error": "Invalid response format"}
         
-        return self._process_crossword_response(response.choices[0].message.content)
-    
-    
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def generate_trivia_questions(self, artist_data: Dict) -> List[Dict[str, Any]]:
         prompt = f"""
@@ -81,39 +96,22 @@ class AIService:
             "difficulty": "easy/medium/hard"
         }}
         """
-        
-        response = self.openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        
-        return self._process_trivia_response(response.choices[0].message.content)
-    
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def analyze_artist_similarity(self, target_artist: Dict, guessed_name: str) -> Dict[str, Any]:
-        prompt = f"""
-        Analyze the similarity between the guessed artist name "{guessed_name}"
-        and the target artist with these characteristics:
-        Genre: {target_artist['genres']}
-        Era: {target_artist.get('debut_year')}
-        Style: {target_artist.get('musical_style', '')}
-        
-        Provide feedback in JSON format:
-        {{
-            "similarity_score": 0-1,
-            "genre_match": true/false,
-            "era_match": true/false,
-            "feedback": "Specific guidance based on the guess",
-            "hint": "Subtle hint about the correct artist"
-        }}
-        """
-        
-        response = self.openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        
-        return self._process_similarity_response(response.choices[0].message.content)
+        try:    
+            response = self.openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7
+            )
+            logger.info("Received response from OPENAI API")
+            return self._process_trivia_response(response.choices[0].message.content)
+        except Exception as e:
+            logger.error(f"Error generating trivia questions: {e}")
+            return [{"error": "Failed to generate trivia questions"}]
+            
+    def _process_trivia_response(self, response_content: str) -> List[Dict[str,Any]]:
+        try:
+            return json.loads(response_content)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse trivia response: {e}")
+            return [{"error": "Invalid response format"}]
+   

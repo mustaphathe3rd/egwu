@@ -29,3 +29,10 @@ class GamePlayback(models.Model):
     
 #     class Meta:
 #         app_label = 'spotify_games'
+
+class UserGameStats(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    total_score = models.IntegerField(default=0)
+    games_played = models.IntegerField(default=0)
+    favorite_game = models.CharField(max_length=50, null=True)
+    highest_streak = models.IntegerField(default=0)

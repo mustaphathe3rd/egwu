@@ -1,5 +1,6 @@
 from .base import BaseGame
 from ..services.ai_service import AIService
+from ..services.cache_service import GameCacheService
 from ..models import GamePlayback
 import random
 from spotify.models import MostListenedSongs, MostListenedArtist
@@ -8,26 +9,29 @@ class TriviaGame(BaseGame):
     def __init__(self, session):
         super().__init__(session)
         self.ai_service = AIService()
+        self.cache_service = GameCacheService()
         
         
     def initialize_game(self):
-    
-        #Get multiple artists for varied questiosn
-        artists = self.get_random_artists(3)
+        # Check cache first
+        cache_key = f"trivia_game_{self.session.id}"
+        cached_game = self.cache.service.get_game_session(
+            self.session.user.id,
+            cache_key
+        )
+        if cached_game:
+            return cached_game
+        
+        #Get multipl
+        artists = self._get_valid_artists(3)
+        if not artists:
+            return {
+                'error': 'Not enough artists with biography available. Try refreshing your music data.'
+            }
+            
         questions = []
         
         for artist in artists:
-            #Get a random song for each artist
-            song = self.get_artist_song(artist)
-            if song:
-                self.setup_playback(
-                    song.spotify_id,
-                    song.name,
-                    artist.name,
-                    song.album_image,
-                    song.preview_url
-                )
-            
             #Generate questions for this artist    
             artist_data = {
                 'biography': artist.biography,
@@ -41,12 +45,32 @@ class TriviaGame(BaseGame):
         #shuffle questions
         random.shuffle(questions)
         
-        return {
-            'questions': questions[:10], #Pick top 10 questions
+        game_state = {
+            'artist_data': {
+                'name': (artist.name for artist in artists),
+                'image_url': (artist.image_url if artist.image_url else '/static/default_artist.png' for artist in artists)
+            },
+            'questions': questions[:10],
             'current_question': 0,
             'score': 0,
-            'total_question': 5
+            'total_question' : 5
         }
+        
+        self.cache_service.cache_game_session(
+            self.session.user.id,
+            cache_key,
+            game_state
+        )
+        
+        return game_state
+    
+    def _get_valid_artists(self, count):
+        """Get an artist with non-null, valid biography."""
+        return self.get_random_artists(count * 2).filter(
+            biography_isnull = False
+        ).exclude(
+            biography__in=['', 'No biography available', 'NULL']
+        )[:count]
         
     def _get_career_highlights(self, artist):
         return {
@@ -56,12 +80,6 @@ class TriviaGame(BaseGame):
             'popularity_score': artist.popularity
         }
         
-    def get_artist_song(self, artist):
-        return MostListenedSongs.objects.filter(
-            user = self.session.user,
-            artist=artist.name
-        ).order_by('?').first()
-            
     def validate_answer(self, answer):
         current_state = self.state.current_state
         current_question = current_state['questions'][current_state['current_question']]
@@ -103,3 +121,4 @@ class TriviaGame(BaseGame):
             'options': question['options']
         }
         
+    
