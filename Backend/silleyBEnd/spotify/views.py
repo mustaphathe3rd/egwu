@@ -1,3 +1,9 @@
+from rest_framework import status, views
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -27,7 +33,6 @@ logger = logging.getLogger("spotify")  # Use the custom logger
 
 def home(request):
     return HttpResponse("Welcome to the Django Spotify Integration!")
-
 
 def spotify_login(request):
     try:
@@ -115,7 +120,7 @@ async def process_user_data(token_info: Dict, user: User) -> None:
         # Create tasks
         tasks = [
             process_top_tracks(sp, user),
-            #process_top_artists(sp, user)
+            process_top_artists(sp, user)
         ]
         
         # Run all tasks concurrently
@@ -149,9 +154,9 @@ async def spotify_callback(request):
         if last_updated and last_updated > one_week_ago:
             logger.info("Data was recently updated; skipping Spotify API calls")
             return JsonResponse({
-                "status": "success",
-                "message": "Data is already up to date. No sync needed.",
-                "user_id": user.spotify_id,
+                 "status": "success",
+                 "message": "Data is already up to date. No sync needed.",
+                 "user_id": user.spotify_id,
             }, status=200)
             
         # Process user data

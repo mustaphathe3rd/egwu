@@ -4,12 +4,15 @@ from difflib import SequenceMatcher
 from datetime import datetime
 from django.db.models import Q
 from ..services.cache_service import GameCacheService
+from ..exceptions import *
+from datetime import datetime
 
 class ArtistGuessGame(BaseGame):
     def __init__(self, session):
         super().__init__(session)
         self.current_year = datetime.now().year
         self.cache_service = GameCacheService()
+        
         
     def _process_artist_data(self, artist):
         """Process and validate artist data, handling null values."""
@@ -24,7 +27,7 @@ class ArtistGuessGame(BaseGame):
             'gender': artist.gender or 'Not Specified',
             'popularity': artist.popularity or 50, # Default to medium popularity
             'most_popular_song': artist.most_popular_song or None,
-            'most_popular_song_url': artist.most_popular_song_url or None, 
+            'most_popular_track_uri': artist.most_popular_track_uri or None, 
             'most_popular_song_id' : artist.most_popular_song_id or None
             }
         
@@ -33,24 +36,24 @@ class ArtistGuessGame(BaseGame):
         # Get random artist from user's most listened
         
         # Check cache first
-        cached_game = self.cache_service.get_game_session(
-            self.session.user.id,
-            'guess_artist'
-        )
+        cached_game = self.get_cached_game('guess_artist')
         if cached_game:
             return cached_game
         
         artist = self.get_random_artists(1)[0] # Uses base class method
+        if not artist:
+            raise GameInitializationError("No valid artists found")
+        
         processed_artist = self._process_artist_data(artist)
         
         # Setup playback for the artist's song
-        if artist.most_popular_song and artist.most_popular_song_url:
+        if processed_artist['most_popular_song'] and processed_artist['most_popular_track_uri']:
             self.setup_playback(
-                artist.most_popular_song,
-                artist.most_popular_song_id,
-                artist.name,
-                artist.image_url,
-                artist.most_popular_song_url,
+                processed_artist['most_popular_song_id'],
+                 processed_artist['most_popular_song'],
+                processed_artist['name'],
+                processed_artist['image_url'],
+                processed_artist['most_popular_track_uri'],
             )
         
         # Get list of all possible artists for autocomplete
@@ -59,45 +62,12 @@ class ArtistGuessGame(BaseGame):
         ).exclude(name_isnull=True)
             
         #Initial hints are genre and country
-        game_state = {
-            'artist_id': artist.id,
-            'revealed_info': {
-                'genres': artist.genres,
-                'country': artist.country
-            },
-            'available_artists':[
-                {
-                    'name': a.name,
-                    'image_url': a.image_url or '/static/default_artist.png'
-                    }
-                for a in available_artists
-                if a.name
-                ],
-            'remaining_attributes': [
-                attr for attr in [
-                'debut_year',
-                'birth_year',
-                'num_albums',
-                'members_count',
-                'gender',
-                'popularity'
-            ]
-            if getattr(artist, attr) is not None # Only include non-null attributes
-            ],
-            'feedback': None,
-            'guess_count': 0,
-            'max_tries': self.session.max_tries,
-            'is_complete': False
-        }
+        game_state = self._create_initial_game_state(processed_artist, available_artists)
         
-        self.cache_service.cache_game_session(
-            self.session.user.id,
-            'guess_artist',
-            game_state
-        )
+        self.cache_game('guess_artist', game_state)
         
         return game_state
-    def validate_guess(self, guess_artist_name):
+    def _validate_answer_impl(self, guess_artist_name):
         """
         Validate a guess and provide detailed feedback on matching attributes.
         
@@ -253,3 +223,37 @@ class ArtistGuessGame(BaseGame):
     def get_artist_details(self):
         """Fetch complete artist details from database."""
         return self.session.artist
+    
+    def _create_initial_game_state(self, processed_artist, available_artists):
+        """Create game state in a separate method"""
+        
+        return {
+            'artist_id': processed_artist['id'],
+            'revealed_info': {
+                'genres': processed_artist['genres'],
+                'country': processed_artist['country']
+            },
+            'available_artists': [
+                {
+                    'name': a.name,
+                    'image_url': a.image_url or '/static/default_artist.png'
+                    }
+                for a in available_artists
+                if a.name
+                ],
+            'remaining_attributes': [
+                attr for attr in [
+                'debut_year',
+                'birth_year',
+                'num_albums',
+                'members_count',
+                'gender',
+                'popularity'
+            ]
+            if getattr(processed_artist, attr) is not None # Only include non-null attributes
+            ],
+            'feedback': None,
+            'guess_count': 0,
+            'max_tries': self.session.max_tries,
+            'is_complete': False
+        }

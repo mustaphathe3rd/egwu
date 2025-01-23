@@ -11,10 +11,12 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+AUTH_USER_MODEL = 'spotify.User'
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
@@ -48,12 +50,13 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'spotify',
     'channels',
-    #'spotify_games',
-    #'rest_framework'
+    'spotify_games',
+    'rest_framework'
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -136,7 +139,17 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
 STATIC_URL = '/static/'
-STATICFILES_DIRS = [BASE_DIR / 'static']
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR , 'static'),
+    ]
+
+# WhiteNoise configuration
+WHITENOISE_USE_FINDERS = True
+if not DEBUG:
+    WHITENOISE_AUTOREFRESH = False
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
@@ -158,7 +171,7 @@ GENIUS_API_TOKEN = config("GENIUS_API_TOKEN")
 OPENAI_API_KEY = config("OPENAI_API_KEY")
 
 
-import os
+
 
 LOGGING = {
     "version": 1,  # Logging configuration version
@@ -187,17 +200,58 @@ LOGGING = {
             "backupCount": 5,
             "formatter": "verbose",
         },
+        "spotify_file": {
+            "level": "DEBUG",
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": os.path.join(BASE_DIR, "spotify.log"),
+            "maxBytes": 1024 * 1024 * 5,  # 5 MB
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
+        "spotify_games_file": {
+            "level": "DEBUG",
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": os.path.join(BASE_DIR, "spotify_games.log"),
+            "maxBytes": 1024 * 1024 * 5,  # 5 MB
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
     },
     "loggers": {
         "django": {
-            "handlers": ["console","file"],
+            "handlers": ["console", "file"],
             "level": "DEBUG",
             "propagate": True,
         },
-        "spotify": {  # Custom logger for your app
-            "handlers": ["file"],
+        "spotify": {  # Custom logger for the spotify app
+            "handlers": ["spotify_file","file"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        "spotify_games": {  # Custom logger for the spotify_games app
+            "handlers": ["spotify_games_file"],
             "level": "DEBUG",
             "propagate": False,
         },
     },
 }
+# Session Configuration
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Use database-backed sessions
+SESSION_COOKIE_AGE = 1209600  # 2 weeks in seconds
+SESSION_COOKIE_SECURE = True  # Use secure cookies in production
+SESSION_COOKIE_HTTPONLY = True  # Prevent JavaScript access to session cookie
+SESSION_COOKIE_SAMESITE = 'Lax'  # Protect against CSRF
+
+# For development
+if DEBUG:
+    SESSION_COOKIE_SECURE = False  # Allow non-HTTPS in development
+
+
+# Session cache settings (optional)
+SESSION_CACHE_ALIAS = "default"
+SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"  # Use cache for better performance
+
+from django.core.management.utils import get_random_secret_key
+
+SECRET_KEY = get_random_secret_key()
+JWT_SECRET_KEY = SECRET_KEY  # Use the same or a different key for JWT

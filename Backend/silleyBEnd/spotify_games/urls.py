@@ -1,8 +1,8 @@
 from django.urls import path, include
-from rest_framework.routers import DefaultRoulter
+from rest_framework.routers import DefaultRouter
 from .views import GameSessionViewSet
 
-router = DefaultRoulter()
+router = DefaultRouter()
 router.register(r'sessions', GameSessionViewSet)
 
 urlpatterns = [

@@ -23,9 +23,7 @@ from django.views.generic import RedirectView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('' , include('spotify.urls')),
-    #path('games/', include('spotify_games.urls')),
-    #path('spotify/', include('spotify.urls')),
-    #path('', home, name='home'),
+    path('spotify/' , include('spotify.urls')),
+    path('games/', include('spotify_games.urls')),
     path('favicon.ico', RedirectView.as_view(url='/static/favicon.ico', permanent=True)),
 ]

@@ -210,11 +210,11 @@ async def process_top_tracks(sp, user):
                     "popularity": track["popularity"],
                     "genres": genres_list,
                     "lyrics": lyrics,
-                    "image_url": (
-                        track.get("images", [{}])[1].get("url") 
-                        if track.get("images") and len(track.get("images", [])) > 1
-                        else None
-                    )   
+                    "image_url": (album.get("images", [{}])[1].get("url") 
+                        if album.get("images") 
+                        else None 
+                    ),
+                    "track_uri": f"spotify:track:{track_id}"
                 }
             }
          
@@ -269,15 +269,33 @@ async def fetch_musicbrainz_data(artist_name: str) -> dict:
     return None
 
 @SpotifyBackoffHandler.get_backoff_decorator()
-async def fetch_most_popular_song(sp, artist_id: str) -> str:
-    """Fetch artist's most popular song with caching"""
+async def fetch_most_popular_song(sp, artist_id: str) -> Optional[Tuple[str, str]]:
+    """Fetch artist's most popular song details.
+    
+    Args: 
+        sp: Spotify client instance
+        artist_id: Spotify artist ID
+        
+    Returns:
+        Tuple containing:
+        - Song name (str)
+        - Song ID (str)
+        or None if fetching fails
+    """
 
     try:
         top_tracks = await safe_spotify_request(sp.artist_top_tracks, artist_id)
+        
         if top_tracks and top_tracks.get("tracks"):
-            song = top_tracks["tracks"][0]["name"]
-            
-            return song
+            top_track = top_tracks["tracks"][0]
+            return (
+                top_track["name"],
+                top_track["id"],
+            )
+        
+        logger.warning(f"No tracks found for artist {artist_id}")
+        return None
+    
     except Exception as e:
         logger.error(f"Error fetching popular song for {artist_id}: {e}")
     return None
@@ -311,7 +329,7 @@ async def fetch_artist_metadata(
     sp: Spotify,
     artist_name: str,
     artist_id: str
-) -> Optional[Tuple[Dict, Tuple[int, Optional[str]], str, int]]:
+) -> Optional[Tuple[Dict, Tuple[int, Optional[str]], Tuple[str, str], int]]:
     """
     Fetch all metadata for an artist concurrently from multiple sources.
     
@@ -319,7 +337,7 @@ async def fetch_artist_metadata(
         Tuple containing:
         - MusicBrainz artist data (Dict)
         - Discogs artist data (Tuple[int, Optional[str]]) - (member_count, debut_year)
-        - Most popular song name (str)
+        - Song details (Tuple[str, str, str, str]) - (name, id, preview_url, spotify_url)
         - Total album count (int)
         Or None if fetching fails
     """
@@ -345,17 +363,22 @@ async def fetch_artist_metadata(
                 return None
         
         # Unpack results
-        musicbrainz_data, discogs_tuple, most_popular_song, album_count = results
+        musicbrainz_data, discogs_tuple, song_details, album_count = results
         
         # Verify discogs_tuple structure
         if not isinstance(discogs_tuple, tuple) or len(discogs_tuple) != 2:
             logger.error(f"Invalid discogs data structure for {artist_name}")
             return None
+        
+        # Verify song_details structure
+        if song_details and not isinstance(song_details, tuple):
+            logger.error(f"Invalid song details structure for {artist_name}")
+            return None
             
         return (
             musicbrainz_data,
             discogs_tuple,  # Keep as tuple, will unpack later
-            most_popular_song,
+            song_details,
             album_count
         )
         
@@ -415,12 +438,30 @@ async def process_top_artists(sp, user):
 
                 
                 try:
-                    musicbrainz_data, discogs_data, most_popular_song, album_count = metadata
-                    if not isinstance(discogs_data, (tuple, list)) or len(discogs_data) != 2:
-                        raise ValueError(f"Invalid discogs_data: {discogs_data}")
-                    logger.debug(f"fetch returned:{musicbrainz_data}|| {discogs_data}|| {most_popular_song}|| {album_count}")
+                    musicbrainz_data, discogs_data, song_details, album_count = metadata
+                    
+                    # if not isinstance(discogs_data, (tuple, list)) or len(discogs_data) != 2:
+                    #     raise ValueError(f"Invalid discogs_data: {discogs_data}")
+                    # logger.debug(f"fetch returned:{musicbrainz_data}|| {discogs_data}|| {most_popular_song}|| {album_count}")
+                    
                     members_count, debut_year = discogs_data
+                    
+                     # Initialize song variables with defaults
+                    most_popular_song = None
+                    most_popular_song_id = None
 
+                     # Unpack song details
+                    if song_details and isinstance(song_details, tuple):
+                        most_popular_song = song_details[0]
+                        most_popular_song_id = song_details[1]
+                        
+                        logger.debug(f"Song details unpacked: {most_popular_song} (ID: {most_popular_song_id})")    
+                    else:
+                        logger.warning(f"Invalid song details for artist {artist['name']: {song_details}}")
+                        most_popular_song = most_popular_song_id = None
+                    
+                    logger.debug(f"fetch returned: musicbrainz={musicbrainz_data}, discogs={discogs_data}, song={most_popular_song}, albums={album_count}")                   
+                
                 except ValueError as e:
                     logger.error(f"Error unpacking metadata for artist {artist['name']}: {e}")
                     continue
@@ -436,6 +477,7 @@ async def process_top_artists(sp, user):
                     logger.error(f"Error getting biography for {artist['name']}: {e}")
                     biography = None
 
+                most_popular_track_uri = f"spotify:track:{most_popular_song_id}" if most_popular_song_id else None
                 
                 artist_data = {
                     'spotify_id': artist_id,
@@ -452,6 +494,8 @@ async def process_top_artists(sp, user):
                         "country": musicbrainz_data.get("country") if musicbrainz_data else None,
                         "gender": musicbrainz_data.get("gender") if musicbrainz_data else None,
                         "most_popular_song": most_popular_song,
+                        "most_popular_song_id": most_popular_song_id,
+                        "most_popular_track_uri": most_popular_track_uri,
                         "biography":biography,
                         "image_url": (
                         artist.get("images", [{}])[1].get("url") 

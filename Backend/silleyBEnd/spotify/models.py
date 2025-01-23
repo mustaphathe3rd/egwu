@@ -1,6 +1,6 @@
 from django.db import models
 from django.utils import timezone
-
+from django.conf import settings
 # Create your models here.
 
 class User(models.Model):
@@ -9,10 +9,13 @@ class User(models.Model):
     email = models.EmailField(null=True, blank=True)
     country = models.CharField(max_length=3, null=True, blank=True, default='US')
     last_updated = models.DateTimeField(null=True, blank=True, auto_now=True)
+    last_refresh_date = models.DateTimeField(null=True, blank=True)
+    refresh_token = models.CharField(max_length=255, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
 
     
     def _str_(self) -> str:
-        return f"{self.display_name} email: {self.email}"
+        return f"{self.display_name} (email: {self.email})"
     
 class MostListenedSongs(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -26,7 +29,7 @@ class MostListenedSongs(models.Model):
     popularity = models.IntegerField(default=0)
     lyrics = models.TextField(blank=True, null=True)
     image_url = models.URLField(max_length=500, null=True, blank=True)
-    display_url = models.URLField(max_length=500, null=True, blank=True)
+    track_uri = models.CharField(max_length=500, null=True, blank=True)
     
     
     
@@ -48,7 +51,7 @@ class MostListenedArtist(models.Model):
     gender = models.CharField(max_length=255, null=True, blank=True)
     most_popular_song = models.CharField(max_length=255, null=True, blank=True)
     most_popular_song_id = models.CharField(max_length=255, null=True)
-    most_popular_song_url = models.URLField(max_length=255, null=True, blank=True)
+    most_popular_track_uri = models.CharField(max_length=255, null=True, blank=True)
     image_url = models.URLField(max_length=500, null=True, blank=True)
     biography = models.TextField(blank=True, null=True)
     
@@ -70,4 +73,17 @@ class MostListenedAlbum(models.Model):
     
     def __str__(self) -> str:
         return f"{self.name}"
+    
+class SpotifyToken(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='spotify_token'
+    )
+    access_token = models.CharField(max_length=255)
+    refresh_token = models.CharField(max_length=255, null=True, blank=True)
+    expires_at = models.DateTimeField()
+    
+    def is_expired(self):
+        return  self.expires_at <= timezone.now()
     

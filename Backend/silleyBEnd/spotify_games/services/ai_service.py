@@ -5,8 +5,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import logging
 import json
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+
+logger = logging.getLogger("spotify_logger")
 class AIService:
     def __init__(self):
         self.openai = openai

@@ -10,10 +10,12 @@ class TriviaGame(BaseGame):
         super().__init__(session)
         self.ai_service = AIService()
         self.cache_service = GameCacheService()
+        self.QUESTIONS_PER_GAME = 5
+        self.MIN_ARTISTS = 3
         
         
     def initialize_game(self):
-        # Check cache first
+        """Initialize a new trivia game or retrieve cached game."""
         cache_key = f"trivia_game_{self.session.id}"
         cached_game = self.cache.service.get_game_session(
             self.session.user.id,
@@ -23,10 +25,11 @@ class TriviaGame(BaseGame):
             return cached_game
         
         #Get multipl
-        artists = self._get_valid_artists(3)
+        artists = self._get_valid_artists(self.MIN_ARTISTS)
         if not artists:
             return {
-                'error': 'Not enough artists with biography available. Try refreshing your music data.'
+                'error': 'Not enough artists with biography available. Try refreshing your music data.',
+                'status': 'error'            
             }
             
         questions = []
@@ -47,13 +50,14 @@ class TriviaGame(BaseGame):
         
         game_state = {
             'artist_data': {
-                'name': (artist.name for artist in artists),
-                'image_url': (artist.image_url if artist.image_url else '/static/default_artist.png' for artist in artists)
+                'name': [artist.name for artist in artists],
+                'image_url': [artist.image_url or '/static/default_artist.png' for artist in artists]
             },
-            'questions': questions[:10],
+            'questions': questions[:self.QUESTIONS_PER_GAME],
             'current_question': 0,
             'score': 0,
-            'total_question' : 5
+            'total_question' : self.QUESTIONS_PER_GAME,
+            'status':'active'
         }
         
         self.cache_service.cache_game_session(

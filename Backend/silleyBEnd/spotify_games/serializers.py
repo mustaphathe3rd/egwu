@@ -14,12 +14,6 @@ class GameSessionSerializer(serializers.ModelSerializer):
         model = GameSession
         fields = ['id', 'game_type', 'start_time', 'end_time', 'score',
                   'max_tries','current_tries','completed', 'playback']
-        
-class GameStateSerializer(serializers.Serializer):
-    session = GameSessionSerializer()
-    current_state = serializers.JSONField()
-    metadata = serializers.DictField(required=False)
-    
 class ArtistGuessInputSerializer(serializers.Serializer):
     artist_name = serializers.CharField(max_length=255, required=True)
     
@@ -41,7 +35,7 @@ class ArtistGuessAttributesSerializer(serializers.Serializer):
 class ArtistInfoSerializer(serializers.Serializer):
     name = serializers.CharField()
     image_url = serializers.URLField()
-    favorite_song = serializers.DIctField(required=False)
+    favorite_song = serializers.DictField(required=False)
     
 class GuessResponseSerializer(serializers.Serializer):
     attributes = ArtistGuessAttributesSerializer()

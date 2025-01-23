@@ -3,6 +3,7 @@ from ..services.ai_service import AIService
 from ..services.cache_service import GameCacheService
 from spotify.models import MostListenedSongs
 import random
+from ..exceptions import *
 
 class CrosswordGame(BaseGame):
     def __init__(self, session):
@@ -10,30 +11,24 @@ class CrosswordGame(BaseGame):
         self.ai_service = AIService()
         self.cache_service = GameCacheService()
         
-    def initialize_game(self):
+    def _initialize_game_impl(self):
         
         # check cache first
-        cache_key = f"crossword_game_{self.session.id}"
-        cached_game = self.cache_service.get_game_session(
-            self.session.user.id,
-            cache_key
-        )
+        cached_game = self.get_cached_game('crossword')
         if cached_game:
             return cached_game
         
         song = self._get_valid_song()
         if not song:
-            return {
-                'error': 'No songs with lyrics available. Try refreshing your music data.'
-            }
+                raise GameInitializationError("No song with lyrics available")           
         
         # Setup playback for the song
         self.setup_playback(
             song.spotify_id,
             song.name,
             song.artist,
-            song.album_image,
-            song.preview_url
+            song.image_url,
+            song.track_uri
         )
         
         # Generate crossword puzzle using AI
@@ -43,19 +38,17 @@ class CrosswordGame(BaseGame):
             'song_data': {
                 'name': song.name,
                 'artist': song.artist,
-                'album_image': song.album_image,
+                'album_image': song.image_url,
                 'spotify_id': song.spotify_id,
-                'preview_url': song.preview_url
+                'preview_url': song.track_uri
             },
-            'puzzle_data': puzzle_data
+            'puzzle_data': puzzle_data,
+            'solved_words': []
         }
         
         # Cache the game state
-        self.cache_service.cache_game_session(
-            self.session.user.id,
-            cache_key,
-            game_state
-        )
+        self.cache_game('crossword', game_state)
+            
         
         return game_state
     
@@ -67,17 +60,22 @@ class CrosswordGame(BaseGame):
             lyrics_in=['', 'No lyrics available']
         ).first()
     
-    def validate_answer(self, answer_data):
-        current_state = self.state.current_state
+    def _validate_answer_impl(self, answer_data):
+      
         word = answer_data.get('word')
         position = answer_data.get('position')
+      
+        if not all([word, position]):
+            raise GameError("invalid answer data")
         
+        current_state = self.state.current_state
+          
         if self._check_word(word, position):
             current_state['solved_words'].append(word)
             self.update_state(current_state)
             
             if len(current_state['solved_words']) == len(current_state['puzzle_data']['words']):
-                self.end_game()
+                self.end_game(score = 100)
             return True
         return False
     

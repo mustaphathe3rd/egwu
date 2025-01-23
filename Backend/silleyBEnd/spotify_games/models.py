@@ -1,6 +1,6 @@
 from django.db import models
 from spotify.models  import User, MostListenedArtist, MostListenedSongs
-
+from datetime import timedelta
 class GameSession(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     game_type = models.CharField(max_length=50)
@@ -19,20 +19,54 @@ class GamePlayback(models.Model):
     spotify_track_id = models.CharField(max_length=255)
     track_name = models.CharField(max_length=255)
     artist_name = models.CharField(max_length=255)
-    album_image_url = models.URLfield()
-    preview_url = models.URLField(null=True, blank=True)
+    album_image_url = models.URLField()
+    spotify_uri = models.CharField(max_length=255, null=True)
         
-# class GameState(models.Model):
-#     session = models.ForeignKey(GameSession, on_delete=models.CASCADE)
-#     current_state = models.JSONField()
-#     last_updated = models.DateTimeField(auto_now=True)
+class GameState(models.Model):
+    session = models.ForeignKey(GameSession, on_delete=models.CASCADE)
+    current_state = models.JSONField()
+    metadata = models.JSONField(default=dict)
+    last_action = models.CharField(max_length=50, null=True)
+    last_updated = models.DateTimeField(auto_now=True)
     
-#     class Meta:
-#         app_label = 'spotify_games'
+    class Meta:
+        indexes = [
+            models.Index(fields=['session', 'last_updated'])
+        ]
 
-class UserGameStats(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    def update_state(self, new_state, action=None):
+        self.current_state.update(new_state)
+        if action:
+            self.last_action = action
+        self.save()
+        
+    def log_action(self, action, metadata=None):
+        if metadata:
+            self.metadata[action] = metadata
+        self.last_action = action
+        self.save()
+        
+class GameStatistics(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    game_type = models.CharField(max_length=50)
+    total_games = models.IntegerField(default=0)
     total_score = models.IntegerField(default=0)
-    games_played = models.IntegerField(default=0)
-    favorite_game = models.CharField(max_length=50, null=True)
-    highest_streak = models.IntegerField(default=0)
+    highest_score = models.IntegerField(default=0)
+    average_score = models.FloatField(default=0.0)
+    total_time_played = models.DurationField(default=timedelta())
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = ['user', 'game_type']
+        
+class GameLeaderboard(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    game_type = models.CharField(max_length=50)
+    score = models.IntegerField()
+    achieved_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['-score','game_type']),
+        ]

@@ -4,6 +4,8 @@ from ..services.cache_service import GameCacheService
 import random
 from difflib import SequenceMatcher
 from datetime import timezone
+
+from ..exceptions import *
 class LyricsGame(BaseGame):
     def __init__(self, session):
         super().__init__(session)
@@ -11,22 +13,16 @@ class LyricsGame(BaseGame):
         self.cache_service = GameCacheService()
         
         
-    def initialize_game(self, input_type='text'):
+    def _initialize_game_impl(self, input_type='text'):
         #check cache first
-        cache_key = f"luyrics_game_{self.session.id}"
-        cached_game = self.cache_service.get_game_session(
-            self.session.user.id,
-            cache_key
-        )
+        cached_game = self.get_cached_game('lyrics')
         if cached_game:
             return cached_game
         
         # Get valid songs with non-null lyrics
         songs = self._get_valid_songs(7) 
         if not songs:
-            return {
-                'error': 'Not enough songs with lyrics available. Try refreshing your music data.'
-            }
+            raise GameInitializationError("Not enough songs with lyrics available")
             
         current_song = songs[0]
         
@@ -35,8 +31,8 @@ class LyricsGame(BaseGame):
             current_song.spotify_id,
             current_song.name,
             current_song.artist,
-            current_song.album_image,
-            current_song.preview_url
+            current_song.image_url,
+            current_song.track_uri
         )
         
         #Generate lyrics challenge
@@ -46,20 +42,16 @@ class LyricsGame(BaseGame):
             'song_data': {
                 'name': current_song.name,
                 'artist': current_song.artist,
-                'album_image': current_song.album_image,
+                'album_image': current_song.image_url,
                 'spotify_id': current_song.spotify_id,
-                'preview_url': current_song.preview_url
+                'track_uri': current_song.track_uri
             },
             'challenge': challenge,
             'input_type': input_type
         }
         
         # Cache the game state
-        self.cache_service.cache_game_session(
-            self.session.user.id,
-            cache_key,
-            game_state
-        )
+        self.cache_game('lyrics', game_state)
         
         return game_state
     
@@ -85,7 +77,7 @@ class LyricsGame(BaseGame):
             'missing_portion': missing_portion
         }
         
-    def validate_answer(self, user_answer: str) -> dict:
+    def _validate_answer_impl(self, user_answer: str) -> dict:
         """
         Validate the user's answer against the correct lyrics.
         
@@ -97,17 +89,9 @@ class LyricsGame(BaseGame):
         """
         
         #Get current gamr state from cache
-        cache_key = f"lyrics_game_{self.session.id}"
-        current_game = self.cache_sevice.get_game_session(
-            self.session.user.id,
-            cache_key
-        )
-        
+        current_game = self.get_cached_game('lyrics')
         if not current_game:
-            return{
-                'error': 'Game session not found',
-                'is_correct': False
-            }
+           raise GameError("Game Session not found")
             
         correct_lyrics = current_game['challenge']['missing_portion']
         
@@ -126,13 +110,7 @@ class LyricsGame(BaseGame):
         
         # Update session if correct
         if is_correct:
-            self.session.score = score
-            self.session.completed = True
-            self.session.end_time = timezone.now()
-            self.session.save()
-            
-            # CLear cache after completion
-            self.cache_service.clear_user_game_cache(self.session.user.id)
+            self.end_game(score=self.session.score)
             
         # Prepare feedback based on similarity
         feedback = self._generate_feedback(similarity, correct_lyrics)
@@ -187,3 +165,5 @@ class LyricsGame(BaseGame):
             result['score'] = int(result['similarity'])
             
         return result
+    
+   
