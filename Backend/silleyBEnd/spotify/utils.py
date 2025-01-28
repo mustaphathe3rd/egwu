@@ -81,7 +81,7 @@ def authenticate_user(request, code):
     )
 
     try:
-        # Get token from Redisu first
+        # Get token from Redis first
         token_info = token_manager.get_token(request.session.get('user_id'))
         
         if token_info and sp_oauth.is_token_expired(token_info):
@@ -105,17 +105,46 @@ def authenticate_user(request, code):
     
 def create_or_update_user(token_info):
     try:
-        sp = Spotify(auth=token_info["access_token"],requests_timeout=60)
+        sp = Spotify(auth=token_info["access_token"], requests_timeout=60)
         user_info = sp.current_user()
-        user, created = User.objects.update_or_create(
-            spotify_id=user_info['id'],
-            defaults={
-                'display_name': user_info.get('display_name', ''),
-                'email': user_info.get('email'),
-                'country': user_info.get('country', 'US')
-            }
-        )
-        return user
+        spotify_id = user_info['id']
+        email = user_info.get('email')
+
+        # Try to find the user by spotify_id first
+        try:
+            user = User.objects.get(spotify_id=spotify_id)
+            # Update existing user with spotify_id
+            updated = False
+            for attr in ['display_name', 'email', 'country']:
+                new_value = user_info.get(attr, getattr(user, attr))
+                if getattr(user, attr) != new_value:
+                    setattr(user, attr, new_value)
+                    updated = True
+            if updated:
+                user.save()
+            return user
+        except User.DoesNotExist:
+            # If user not found by spotify_id, check by email
+            if email:
+                try:
+                    user = User.objects.get(email=email)
+                    # Update existing user's spotify_id and other fields
+                    user.spotify_id = spotify_id
+                    user.display_name = user_info.get('display_name', user.display_name)
+                    user.country = user_info.get('country', user.country)
+                    user.save()
+                    return user
+                except User.DoesNotExist:
+                    # Email doesn't exist; create new user
+                    pass
+            # Create new user
+            user = User.objects.create(
+                spotify_id=spotify_id,
+                display_name=user_info.get('display_name', ''),
+                email=email,
+                country=user_info.get('country', 'US')
+            )
+            return user
     except Exception as e:
         logger.error(f"Error creating/updating user: {e}")
         raise

@@ -5,7 +5,6 @@ import random
 from ..exceptions import *
 import logging
 from ..services.cache_service import GameCacheService
-
 from datetime import timezone
 from ..monitoring import *
 

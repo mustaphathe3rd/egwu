@@ -12,7 +12,8 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
-
+import sys
+from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -63,14 +64,20 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
+    'spotify.middleware.SpotifyTokenMiddleware',
+    'spotify_games.middleware.JWTTokenRefreshMiddleware',
+]# 'spotify.authmiddleware.SpotifyAuthenticationMiddleware',
 
 ROOT_URLCONF = 'silleyBEnd.urls'
 
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [
+            os.path.join(BASE_DIR,'templates'),
+            os.path.join(BASE_DIR,'spotify_games', 'templates'),
+            os.path.join(BASE_DIR,'spotify', 'templates'),
+            ],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -78,6 +85,8 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                # Add custom context processor
+                #'spotify_games.context_processors.game_context',
             ],
         },
     },
@@ -101,6 +110,12 @@ DATABASES = {
         'PORT': '5432',           # Database port (default for PostgreSQL)
     }
 }
+
+if 'test' in sys.argv:
+    DATABASES['default'] = {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': ':memory:',
+    }
 
 
 
@@ -238,9 +253,12 @@ LOGGING = {
 # Session Configuration
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Use database-backed sessions
 SESSION_COOKIE_AGE = 1209600  # 2 weeks in seconds
-SESSION_COOKIE_SECURE = True  # Use secure cookies in production
+SESSION_COOKIE_SECURE = True  # Use secure cookies in production, # Set to False in development if not using HTTPS
 SESSION_COOKIE_HTTPONLY = True  # Prevent JavaScript access to session cookie
 SESSION_COOKIE_SAMESITE = 'Lax'  # Protect against CSRF
+# Add these to your settings.py
+SESSION_COOKIE_DOMAIN = 'http://127.0.0.1:8000/' # Set to your domain in production
+CSRF_COOKIE_SECURE = True    # Set to False in development if not using HTTPS
 
 # For development
 if DEBUG:
@@ -251,7 +269,32 @@ if DEBUG:
 SESSION_CACHE_ALIAS = "default"
 SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"  # Use cache for better performance
 
-from django.core.management.utils import get_random_secret_key
+# from django.core.management.utils import get_random_secret_key
 
-SECRET_KEY = get_random_secret_key()
-JWT_SECRET_KEY = SECRET_KEY  # Use the same or a different key for JWT
+# SECRET_KEY = get_random_secret_key()
+# JWT_SECRET_KEY = SECRET_KEY  # Use the same or a different key for JWT
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'spotify_games.authentication.CompositeAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'AUTH_COOKIE': 'access_token',
+    'AUTH_COOKIE_REFRESH': 'refresh_token',
+    'AUTH_COOKIE_SECURE': True,
+    'AUTH_COOKIE_HTTP_ONLY': True,
+    'AUTH_COOKIE_SAMESITE': 'Lax',
+    'AUTH_COOKIE_PATH': '/'
+}
+

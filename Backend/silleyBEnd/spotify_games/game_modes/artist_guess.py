@@ -5,7 +5,6 @@ from datetime import datetime
 from django.db.models import Q
 from ..services.cache_service import GameCacheService
 from ..exceptions import *
-from datetime import datetime
 
 class ArtistGuessGame(BaseGame):
     def __init__(self, session):

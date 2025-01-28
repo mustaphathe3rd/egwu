@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}Spotify Music Games{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+      }
+      .game-card:hover .game-icon {
+        transform: scale(1.1);
+        transition: transform 0.3s ease;
+      }
+      .gradient-bg {
+        background: linear-gradient(135deg, #1db954 0%, #169e45 100%);
+      }
+      .custom-shadow {
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+      }
+    </style>
+    {% block extra_head %}{% endblock %}
+  </head>
+  <body class="bg-gray-50 min-h-screen flex flex-col">
+    <!-- Navigation -->
+    <nav class="gradient-bg text-white shadow-lg">
+      <div class="container mx-auto px-4">
+        <div class="flex justify-between items-center h-16">
+          <div class="flex items-center space-x-4">
+            <a href="/" class="flex items-center space-x-2">
+              <i class="ph-fill ph-spotify-logo text-2xl"></i>
+              <span class="text-xl font-bold">Music Games</span>
+            </a>
+          </div>
+
+          <div class="hidden md:flex items-center space-x-6">
+            {% if user.is_authenticated %}
+            <a
+              href="{% url 'spotify_games:dashboard' %}"
+              class="hover:text-gray-200 transition-colors duration-200 flex items-center"
+            >
+              <i class="ph-fill ph-game-controller mr-2"></i>
+              Games
+            </a>
+            <a
+              href="#"
+              class="hover:text-gray-200 transition-colors duration-200 flex items-center"
+            >
+              <i class="ph-fill ph-trophy mr-2"></i>
+              Leaderboard
+            </a>
+            <div
+              class="flex items-center space-x-2 ml-4 px-3 py-1 rounded-full bg-white/10"
+            >
+              <i class="ph-fill ph-user-circle text-xl"></i>
+              <span>{{ user.username }}</span>
+            </div>
+            {% else %}
+            <a
+              href="{% url 'spotify:login' %}"
+              class="bg-white text-green-600 px-4 py-2 rounded-full font-medium hover:bg-gray-100 transition-colors duration-200"
+            >
+              Connect Spotify
+            </a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-grow container mx-auto px-4 py-8">
+      {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-gray-800 text-gray-300 py-8 mt-auto">
+      <div class="container mx-auto px-4">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div>
+            <h3 class="text-lg font-semibold mb-4">About</h3>
+            <p class="text-sm">
+              Test your music knowledge and challenge friends with our
+              Spotify-powered music games.
+            </p>
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold mb-4">Quick Links</h3>
+            <ul class="space-y-2 text-sm">
+              <li>
+                <a
+                  href="#"
+                  class="hover:text-white transition-colors duration-200"
+                  >Home</a
+                >
+              </li>
+              <li>
+                <a
+                  href="#"
+                  class="hover:text-white transition-colors duration-200"
+                  >Games</a
+                >
+              </li>
+              <li>
+                <a
+                  href="#"
+                  class="hover:text-white transition-colors duration-200"
+                  >Leaderboard</a
+                >
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold mb-4">Connect</h3>
+            <div class="flex space-x-4">
+              <a
+                href="#"
+                class="text-2xl hover:text-white transition-colors duration-200"
+              >
+                <i class="ph-fill ph-twitter-logo"></i>
+              </a>
+              <a
+                href="#"
+                class="text-2xl hover:text-white transition-colors duration-200"
+              >
+                <i class="ph-fill ph-github-logo"></i>
+              </a>
+              <a
+                href="#"
+                class="text-2xl hover:text-white transition-colors duration-200"
+              >
+                <i class="ph-fill ph-discord-logo"></i>
+              </a>
+            </div>
+          </div>
+        </div>
+        <div class="mt-8 pt-8 border-t border-gray-700 text-center text-sm">
+          <p>&copy; {% now "Y" %} Spotify Music Games. All rights reserved.</p>
+        </div>
+      </div>
+    </footer>
+
+    {% block extra_scripts %}{% endblock %}
+  </body>
+</html>

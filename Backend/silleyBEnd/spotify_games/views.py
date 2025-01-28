@@ -1,5 +1,6 @@
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
+from rest_framework import authentication
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
@@ -7,25 +8,66 @@ from .models import GameSession, GameStatistics, GameLeaderboard
 from .serializers import GameSessionSerializer, ArtistGuessInputSerializer, GuessSubmissionResponseSerializer
 from .services.cache_service import GameCacheService
 import logging
-from .permission import IsSpotifyAuthenticated, IsGameSessionOwner
+from .permission import ValidSpotifyTokenRequired, IsGameSessionOwner
 from .game_modes.lyrics_game import LyricsGame
 from .game_modes.artist_guess import ArtistGuessGame
 from .game_modes.crossword import CrosswordGame
 from .game_modes.trivia import TriviaGame
-from .authentication import SpotifyTokenAuthentication
+from .authentication import CompositeAuthentication
 from datetime import datetime
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 from .monitoring import GameAnalytics
 from .exceptions import *
 from .services.analytics_service import AnalyticsService
+from django.shortcuts import render, redirect
+from django.contrib.auth.decorators import login_required
+from rest_framework.views import APIView
+from spotify.models import SpotifyToken
+
 
 logger = logging.getLogger("spotify_games")
+
+class DashboardView(APIView):
+    authentication_classes = [CompositeAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            context = {
+                'available_games': [
+                    {
+                        'name': 'Lyrics Game',
+                        'type': 'lyrics_text',
+                        'description': 'Test your knowledge of song lyrics'
+                    },
+                    {
+                        'name': 'Artist Guess',
+                        'type': 'guess_artist',
+                        'description': 'Guess the artist based on hints'
+                    },
+                    {
+                        'name': 'Music Trivia',
+                        'type': 'trivia',
+                        'description': 'Test your music knowledge'
+                    },
+                ],
+                'user': request.user,
+                'spotify_connected': True
+            }
+            
+            return render(request, 'home.html', context)
+        
+        except Exception as e:
+            logger.error(f"Dashboard error: {str(e)}")
+            return redirect('spotify:home')
+
+    
 class GameSessionViewSet(viewsets.ModelViewSet):
     queryset = GameSession.objects.all()
     serializer_class = GameSessionSerializer
-    authentication_classes = [SpotifyTokenAuthentication]
-    permission_classes = [IsAuthenticated, IsSpotifyAuthenticated]
+    authentication_classes = [CompositeAuthentication]
+    permission_classes = [IsAuthenticated]
     analytics = GameAnalytics()
     cache_service = GameCacheService()
     
@@ -38,9 +80,10 @@ class GameSessionViewSet(viewsets.ModelViewSet):
     }
     
     def get_permissions(self):
+        permissions = super().get_permissions()
         if self.action in ['retrieve', 'submit_answer', 'get_hint','submit_guess','search_artists']:
-            return [IsAuthenticated(), IsGameSessionOwner()]
-        return super().get_permissions()
+            permissions.append(IsGameSessionOwner())
+        return permissions
     
     @action(detail=False, methods=['post'])
     def start_game(self, request):
