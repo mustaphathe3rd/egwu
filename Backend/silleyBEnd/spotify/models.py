@@ -26,7 +26,9 @@ class User(AbstractUser):
     email = models.EmailField(unique=True, null=True)
     country = models.CharField(max_length=3, null=True, blank=True, default='US')
     last_updated = models.DateTimeField(null=True, blank=True, auto_now=True)
+    display_image = models.URLField(max_length=500, null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    is_data_processed = models.BooleanField(default=False)
     
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
@@ -149,3 +151,15 @@ class SpotifyToken(models.Model):
         except Exception as e:
             logger.error(f"Error refreshing token for user {self.user.id}: {str(e)}")
             raise
+        
+    def is_valid(self):
+        """Check if the token is valid and not expired."""
+        return self.access_token and timezone.now() < self.expires_at
+    
+class SpotifyPlaybackToken(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    access_token = models.TextField()
+    expires_at = models.DateTimeField()
+    
+    class Meta:
+        get_latest_by = 'expires_at'

@@ -38,7 +38,7 @@ class GameAnalytics:
             event_type = 'completion',
             user_id = session.user.id,
             game_type = session.game_type,
-            time_stamp = datetime.now(),
+            timestamp = datetime.now(),
             metadata = {
                 'duration': duration,
                 'score': session.score,

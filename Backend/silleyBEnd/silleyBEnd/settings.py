@@ -14,6 +14,7 @@ from pathlib import Path
 import os
 import sys
 from datetime import timedelta
+import base64
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -39,6 +40,10 @@ CACHES = {
 
 GAME_CACHE_TIMEOUT = 3600  # 1 hour
 
+# Session cache settings (optional)
+SESSION_CACHE_ALIAS = "default"
+SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"  # Use cache for better performance
+
 
 # Application definition
 
@@ -52,12 +57,14 @@ INSTALLED_APPS = [
     'spotify',
     'channels',
     'spotify_games',
-    'rest_framework'
+    'rest_framework',
+    'corsheaders',
+    'django_extensions',
 ]
-
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -66,7 +73,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'spotify.middleware.SpotifyTokenMiddleware',
     'spotify_games.middleware.JWTTokenRefreshMiddleware',
-]# 'spotify.authmiddleware.SpotifyAuthenticationMiddleware',
+]
 
 ROOT_URLCONF = 'silleyBEnd.urls'
 
@@ -184,9 +191,10 @@ DISCOGS_ACCESS_TOKEN_SECRET = config("ACCESS_TKEN_SECRET")
 LASTFM_API_KEY = config("API_KEY")
 GENIUS_API_TOKEN = config("GENIUS_API_TOKEN")
 OPENAI_API_KEY = config("OPENAI_API_KEY")
-
-
-
+TOGETHER_API_KEY = config("TOGETHER_API_KEY")
+HUGGINGFACE_API_KEY = config("HUGGINGFACE_API_KEY")
+PALM_API_KEY = config("PALM_API_KEY")
+SPOTIFY_AUTH_HEADER = f"Basic {base64.b64encode(f'{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}'.encode()).decode()}"
 
 LOGGING = {
     "version": 1,  # Logging configuration version
@@ -250,34 +258,76 @@ LOGGING = {
         },
     },
 }
+
+# For production, specify allowed origins
+CORS_ALLOWED_ORIGINS = [
+     "http://localhost:5173", # Your React dev server
+    "http://127.0.0.1:5173" ,   
+ ]
+
+# During development
+ #CORS_ALLOW_ALL_ORIGINS = True # Only for development
+CORS_ALLOW_CREDENTIALS = False
+
+#CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
+CORS_EXPOSE_HEADERS = ['Content-Type', 'Authorization']
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "user-agent",
+    "x-requested-with",
+]
+
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+}
+    
 # Session Configuration
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Use database-backed sessions
 SESSION_COOKIE_AGE = 1209600  # 2 weeks in seconds
-SESSION_COOKIE_SECURE = True  # Use secure cookies in production, # Set to False in development if not using HTTPS
+SESSION_COOKIE_SECURE = not DEBUG  # Use secure cookies in production, # Set to False in development if not using HTTPS
 SESSION_COOKIE_HTTPONLY = True  # Prevent JavaScript access to session cookie
 SESSION_COOKIE_SAMESITE = 'Lax'  # Protect against CSRF
-# Add these to your settings.py
-SESSION_COOKIE_DOMAIN = 'http://127.0.0.1:8000/' # Set to your domain in production
-CSRF_COOKIE_SECURE = True    # Set to False in development if not using HTTPS
+#SESSION_COOKIE_DOMAIN = 'http://127.0.0.1' # Set to your domain in production
+SESSION_COOKIE_DOMAIN = None
+CSRF_COOKIE_SECURE = not DEBUG   # Set to False in development if not using HTTPS
+CSRF_COOKIE_SAMESITE = 'Lax'
 
 # For development
 if DEBUG:
     SESSION_COOKIE_SECURE = False  # Allow non-HTTPS in development
+    CSRF_COOKIE_SECURE = False
 
 
-# Session cache settings (optional)
-SESSION_CACHE_ALIAS = "default"
-SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"  # Use cache for better performance
 
-# from django.core.management.utils import get_random_secret_key
-
-# SECRET_KEY = get_random_secret_key()
-# JWT_SECRET_KEY = SECRET_KEY  # Use the same or a different key for JWT
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'spotify.authentication.JWTAuthentication',
+        'spotify_games.authentication.JWTAuthentication',  
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'spotify_games.authentication.CompositeAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
@@ -285,16 +335,7 @@ REST_FRAMEWORK = {
     ],
 }
 
-SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
-    'AUTH_COOKIE': 'access_token',
-    'AUTH_COOKIE_REFRESH': 'refresh_token',
-    'AUTH_COOKIE_SECURE': True,
-    'AUTH_COOKIE_HTTP_ONLY': True,
-    'AUTH_COOKIE_SAMESITE': 'Lax',
-    'AUTH_COOKIE_PATH': '/'
-}
+# from django.core.management.utils import get_random_secret_key
 
+# SECRET_KEY = get_random_secret_key()
+# JWT_SECRET_KEY = SECRET_KEY  # Use the same or a different key for JWT

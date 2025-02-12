@@ -1,0 +1,18 @@
+{% extends "base.html" %} {% block content %}
+<div class="min-h-screen flex items-center justify-center">
+  <div class="text-center">
+    <h1 class="text-2x1 font-bold text-gray-800 mb-4">
+      Oops! Something went wrong
+    </h1>
+    <p class="text-gray-600 mb-6">
+      {{error|default:"An unexpected error occured"}}
+    </p>
+    <a
+      href="{% url 'spotify_games:dashboard' %}"
+      class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded"
+    >
+      Return to dashboard
+    </a>
+  </div>
+</div>
+{% endblock %}

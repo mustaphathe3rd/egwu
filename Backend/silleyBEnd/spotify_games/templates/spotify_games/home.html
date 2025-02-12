@@ -1,0 +1,184 @@
+{% extends "base.html" %} {% block content %}
+<div class="max-w-7xl mx-auto">
+  <!-- Header Section -->
+  <div class="text-center mb-12">
+    <h1 class="text-4xl font-bold text-gray-800 mb-4">
+      Welcome to Spotify Music Games
+    </h1>
+    <p class="text-xl text-gray-600 max-w-3xl mx-auto">
+      Challenge yourself with personalized music games based on your Spotify
+      listening history
+    </p>
+  </div>
+
+  <!-- Stats Section -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+    <div class="bg-white rounded-xl p-6 text-center custom-shadow">
+      <div class="text-green-500 text-3xl mb-2">
+        <i class="ph-fill ph-music-notes"></i>
+      </div>
+      <h3 class="text-2xl font-bold text-gray-800">Your Library</h3>
+      <p class="text-gray-600 mt-2">Games tailored to your music taste</p>
+    </div>
+    <div class="bg-white rounded-xl p-6 text-center custom-shadow">
+      <div class="text-green-500 text-3xl mb-2">
+        <i class="ph-fill ph-trophy"></i>
+      </div>
+      <h3 class="text-2xl font-bold text-gray-800">Leaderboards</h3>
+      <p class="text-gray-600 mt-2">Compete with other music lovers</p>
+    </div>
+    <div class="bg-white rounded-xl p-6 text-center custom-shadow">
+      <div class="text-green-500 text-3xl mb-2">
+        <i class="ph-fill ph-chart-line-up"></i>
+      </div>
+      <h3 class="text-2xl font-bold text-gray-800">Track Progress</h3>
+      <p class="text-gray-600 mt-2">Monitor your gaming achievements</p>
+    </div>
+  </div>
+
+  <!-- Games Grid -->
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+    {% for game in available_games %}
+    <div
+      class="bg-white rounded-xl overflow-hidden custom-shadow game-card transform transition-all duration-300 hover:scale-105"
+    >
+      <div class="p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div class="game-icon text-green-500 text-4xl">
+            {% if game.type == 'lyrics_text' %}
+            <i class="ph-fill ph-text-t"></i>
+            {% elif game.type == 'guess_artist' %}
+            <i class="ph-fill ph-microphone-stage"></i>
+            {% else %}
+            <i class="ph-fill ph-question"></i>
+            {% endif %}
+          </div>
+          <span
+            class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full"
+            >New</span
+          >
+        </div>
+        <h2 class="text-xl font-bold text-gray-800 mb-2">{{ game.name }}</h2>
+        <p class="text-gray-600 mb-6">{{ game.description }}</p>
+        <button
+          class="play-game-btn w-full bg-green-500 hover:bg-green-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 flex items-center justify-center"
+          data-game-type="{{ game.type }}"
+        >
+          <i class="ph-fill ph-play mr-2"></i>
+          Play Now
+        </button>
+      </div>
+      <div class="px-6 py-4 bg-gray-50 border-t border-gray-100">
+        <div class="flex items-center justify-between text-sm text-gray-600">
+          <span class="flex items-center">
+            <i class="ph-fill ph-users mr-1"></i>
+            1.2k players
+          </span>
+          <span class="flex items-center">
+            <i class="ph-fill ph-star mr-1"></i>
+            4.8/5
+          </span>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const buttons = document.querySelectorAll(".play-game-btn");
+    buttons.forEach((button) => {
+      button.addEventListener("click", async function (e) {
+        e.preventDefault();
+        const gameType = this.dataset.gameType;
+        await handleGameStart(gameType, this);
+      });
+    });
+  });
+
+  async function handleGameStart(gameType, buttonElement) {
+    try {
+      // Disable button and show loading state
+      buttonElement.disabled = true;
+      const originalContent = buttonElement.innerHTML;
+      buttonElement.innerHTML =
+        '<i class="ph-fill ph-spinner animate-spin mr-2"></i>Loading...';
+
+      const csrftoken = getCookie("csrftoken");
+      console.log("Starting game type:", gameType); // Debug log
+
+      const response = await fetch("/games/api/sessions/start_game/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrftoken,
+        },
+        body: JSON.stringify({
+          game_type: gameType,
+        }),
+      });
+
+      console.log("Response status:", response.status); // Debug log
+      const data = await response.json();
+      console.log("Response data:", data); // Debug log
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+      }
+
+      if (data.session && data.session.id) {
+        // Redirect to the game page
+        window.location.href = `/games/play/${data.session.id}/`;
+      } else {
+        throw new Error("Invalid session data received");
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      // Reset button state
+      buttonElement.disabled = false;
+      buttonElement.innerHTML = '<i class="ph-fill ph-play mr-2"></i>Play Now';
+      showNotification(
+        error.message || "Failed to start game. Please try again.",
+        "error"
+      );
+    }
+  }
+
+  function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== "") {
+      const cookies = document.cookie.split(";");
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i].trim();
+        if (cookie.substring(0, name.length + 1) === name + "=") {
+          cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+          break;
+        }
+      }
+    }
+    return cookieValue;
+  }
+
+  function showNotification(message, type) {
+    const notification = document.createElement("div");
+    notification.className = `fixed bottom-4 right-4 p-4 rounded-lg shadow-lg ${
+      type === "error" ? "bg-red-500" : "bg-green-500"
+    } text-white z-50`;
+    notification.textContent = message;
+    document.body.appendChild(notification);
+
+    // Remove existing notifications
+    const existingNotifications = document.querySelectorAll(
+      '[class^="fixed bottom-4"]'
+    );
+    existingNotifications.forEach((notif) => notif.remove());
+
+    document.body.appendChild(notification);
+
+    setTimeout(() => {
+      notification.remove();
+    }, 3000);
+  }
+</script>
+{% endblock %}

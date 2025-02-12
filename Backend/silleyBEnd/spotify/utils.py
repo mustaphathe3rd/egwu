@@ -109,6 +109,9 @@ def create_or_update_user(token_info):
         user_info = sp.current_user()
         spotify_id = user_info['id']
         email = user_info.get('email')
+        images = user_info.get('images', [])
+        display_image_url = images[0]['url'] if images else None
+        logger.debug(f"image url: {display_image_url}")
 
         # Try to find the user by spotify_id first
         try:
@@ -120,6 +123,11 @@ def create_or_update_user(token_info):
                 if getattr(user, attr) != new_value:
                     setattr(user, attr, new_value)
                     updated = True
+                    
+            if user.display_image != display_image_url:
+                user.display_image = display_image_url
+                updated = True
+                
             if updated:
                 user.save()
             return user
@@ -132,6 +140,7 @@ def create_or_update_user(token_info):
                     user.spotify_id = spotify_id
                     user.display_name = user_info.get('display_name', user.display_name)
                     user.country = user_info.get('country', user.country)
+                    user.display_image = display_image_url
                     user.save()
                     return user
                 except User.DoesNotExist:
@@ -142,8 +151,9 @@ def create_or_update_user(token_info):
                 spotify_id=spotify_id,
                 display_name=user_info.get('display_name', ''),
                 email=email,
-                country=user_info.get('country', 'US')
-            )
+                country=user_info.get('country', 'US'),
+                display_image=display_image_url
+            ),
             return user
     except Exception as e:
         logger.error(f"Error creating/updating user: {e}")

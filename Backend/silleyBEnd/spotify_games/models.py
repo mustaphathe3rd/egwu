@@ -2,8 +2,15 @@ from django.db import models
 from spotify.models  import User, MostListenedArtist, MostListenedSongs
 from datetime import timedelta
 class GameSession(models.Model):
+    GAME_TYPE_CHOICES = [
+        ('lyrics_text', 'Lyrics Text Mode'),
+        ('lyrics_voice', 'Lyrics Voice Mode'),
+        ('guess_artist, Artist Guess'),
+        ('crossword', 'Crossword'),
+        ('trivia', 'Trivia')
+    ]
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    game_type = models.CharField(max_length=50)
+    game_type = models.CharField(max_length=50, choices = GAME_TYPE_CHOICES)
     start_time = models.DateTimeField(auto_now_add=True)
     end_time = models.DateTimeField(null=True, blank=True)
     score = models.IntegerField(default=0)
@@ -23,8 +30,8 @@ class GamePlayback(models.Model):
     spotify_uri = models.CharField(max_length=255, null=True)
         
 class GameState(models.Model):
-    session = models.ForeignKey(GameSession, on_delete=models.CASCADE)
-    current_state = models.JSONField()
+    session = models.ForeignKey(GameSession, on_delete=models.CASCADE, related_name="gamestate")
+    current_state = models.JSONField(default=dict)
     metadata = models.JSONField(default=dict)
     last_action = models.CharField(max_length=50, null=True)
     last_updated = models.DateTimeField(auto_now=True)
@@ -35,6 +42,8 @@ class GameState(models.Model):
         ]
 
     def update_state(self, new_state, action=None):
+        if not isinstance(self.current_state, dict):
+            self.current_state = {}
         self.current_state.update(new_state)
         if action:
             self.last_action = action
@@ -42,6 +51,8 @@ class GameState(models.Model):
         
     def log_action(self, action, metadata=None):
         if metadata:
+            if not isinstance(self.metadata, dict):
+                self.metadata = {}
             self.metadata[action] = metadata
         self.last_action = action
         self.save()

@@ -1,0 +1,6 @@
+POST http://localhost:8000/games/api/sessions/start_game/ HTTP/1.1
+Cookie: access_token= eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzM4MjQxODg2LCJpYXQiOjE3MzgyMzgyODYsImp0aSI6IjA2MTRjYTcxYmUwZjQ4MzM4OGI5N2IxYTA4Zjc0ZDM4IiwidXNlcl9pZCI6MX0.jNU3sJK4e7Z06vuxYQVpMBWXli64rBxOCQa2JYXd9kM
+Content-Type: application/json
+{
+    "game_type" : guess_artist
+}

@@ -5,7 +5,7 @@ import random
 from ..exceptions import *
 import logging
 from ..services.cache_service import GameCacheService
-from datetime import timezone
+from django.utils import timezone
 from ..monitoring import *
 
 logger = logging.getLogger('spotify_games')
@@ -13,7 +13,14 @@ logger = logging.getLogger('spotify_games')
 class BaseGame(ABC):
     def __init__(self, session: GameSession):
         self.session = session
-        self.state = GameState.objects.get_or_create(session=session)[0]
+        self.state = GameState.objects.get_or_create(
+            session=session,
+            defaults={
+                'current_state': {},
+                'metadata': {}
+            }                                         
+                                                     
+            )[0]
         self.cache_service = GameCacheService()
         self.monitoring = GameAnalytics()
         
@@ -28,7 +35,7 @@ class BaseGame(ABC):
         )
         self.monitoring.track_event(event)
         
-    def initialize_game(self):
+    def initialize_game(self, input_type=None):
         try:
             game_state = self._initialize_game_impl()
             self.state.update_state(game_state, 'initialized')
@@ -49,15 +56,13 @@ class BaseGame(ABC):
     def get_cached_game(self, game_type: str) -> dict:
         """Centralized cache checking for all game modes"""
         return self.cache_service.get_game_session(
-            self.session.user.id,
-            f"{game_type}_{self.session.id}"
-        )
+            self.session.user.id,game_type)
         
     def cache_game(self, game_type: str, state:dict) -> None:
         """Centralized cache settings for all game modes"""
         self.cache_service.cache_game_session(
             self.session.user.id,
-            f"{game_type}_{self.session.id}",
+            game_type,
             state
         )
         
@@ -67,7 +72,7 @@ class BaseGame(ABC):
         self.session.completed = True
         self.session.end_time = timezone.now()
         self.session.save()
-        self.cache_service.clear_user_game_cache(self.session.user.id)
+        self.cache_service.clear_game_session(self.session.user.id, game_type=self.session.game_type)
         
         self.monitoring.track_game_completion(self.session)
         

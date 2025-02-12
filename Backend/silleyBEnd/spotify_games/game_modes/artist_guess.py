@@ -5,6 +5,9 @@ from datetime import datetime
 from django.db.models import Q
 from ..services.cache_service import GameCacheService
 from ..exceptions import *
+import logging
+
+logger = logging.getLogger("spotify_games")
 
 class ArtistGuessGame(BaseGame):
     def __init__(self, session):
@@ -16,6 +19,7 @@ class ArtistGuessGame(BaseGame):
     def _process_artist_data(self, artist):
         """Process and validate artist data, handling null values."""
         return{
+            'id': artist.spotify_id,
             'name': artist.name,
             'image_url': artist.image_url or '/static/default_artist.png',
             'genres' : artist.genres or 'Genre Unknown',
@@ -23,6 +27,7 @@ class ArtistGuessGame(BaseGame):
             'birth_year': artist.birth_year or 0,
             'num_albums': artist.num_albums or 0,
             'members': artist.members or 1, # Default to solo artist
+            'country': artist.country or 'Country Unknown',
             'gender': artist.gender or 'Not Specified',
             'popularity': artist.popularity or 50, # Default to medium popularity
             'most_popular_song': artist.most_popular_song or None,
@@ -30,7 +35,7 @@ class ArtistGuessGame(BaseGame):
             'most_popular_song_id' : artist.most_popular_song_id or None
             }
         
-    def initialize_game(self):
+    def _initialize_game_impl(self):
         """Initialize a new artist guessing game session."""
         # Get random artist from user's most listened
         
@@ -58,7 +63,7 @@ class ArtistGuessGame(BaseGame):
         # Get list of all possible artists for autocomplete
         available_artists = MostListenedArtist.objects.filter(
             user=self.session.user
-        ).exclude(name_isnull=True)
+        ).exclude(name__isnull=True)
             
         #Initial hints are genre and country
         game_state = self._create_initial_game_state(processed_artist, available_artists)
@@ -66,7 +71,7 @@ class ArtistGuessGame(BaseGame):
         self.cache_game('guess_artist', game_state)
         
         return game_state
-    def _validate_answer_impl(self, guess_artist_name):
+    def validate_guess(self, guess_artist_name):
         """
         Validate a guess and provide detailed feedback on matching attributes.
         
@@ -74,16 +79,26 @@ class ArtistGuessGame(BaseGame):
             guess_artist_name (str): Name of the guessed artist
             
         """
+        logger.debug(f"Attempting to validate guess: {guess_artist_name}")
+        available_artists = MostListenedArtist.objects.filter(
+            user=self.session.user
+        ).values_list('name', flat=True)
+        logger.debug(f"Available artists: {list(available_artists)}")
+        
         # Check cache for processed artist data
-        cached_target = self.cache_service.get_artist_data(self.session.artist_id)
+        target_artist_id = self.state.current_state.get('artist_id')
+        if not target_artist_id:
+            raise GameError("Target artist is not set in the game state")
+        
+        cached_target = self.cache_service.get_artist_data(target_artist_id)
         if not cached_target:
-            target_artist = MostListenedArtist.objects.get(id=self.session.artist_id)
+            target_artist = MostListenedArtist.objects.get(spotify_id=target_artist_id)
             cached_target = self._process_artist_data(target_artist)
-            self.cache_service.cache_artist_data(self.session.artist_id, cached_target)
+            self.cache_service.cache_artist_data(target_artist_id, cached_target)
             
         guess_artist = MostListenedArtist.objects.filter(
-            user=self.session.use,
-            name= guess_artist_name
+            user=self.session.user,
+            name__iexact= guess_artist_name
         ).first()
         
         if not guess_artist or not guess_artist.name:
@@ -109,18 +124,18 @@ class ArtistGuessGame(BaseGame):
             if attr in ['name', 'image_url', 'biography']:
                 continue
             
-            if cached_target[attr] and processed_guess[attr]:
-                result = self._compare_values(
-                    attr,
-                    processed_guess[attr],
-                    cached_target[attr]
-                )
-                feedback['attributes'][attr] = {
-                    'status': result['status'],
-                    'message': result['message'],
-                    'animation': f"fade-{result['status']}",
-                    'guessed_value': processed_guess[attr]
-                }
+            
+            result = self._compare_values(
+                attr,
+                processed_guess[attr],
+                cached_target[attr]
+            )
+            feedback['attributes'][attr] = {
+                'status': result['status'],
+                'message': result['message'],
+                'animation': f"fade-{result['status']}",
+                'guessed_value': processed_guess[attr]
+            }
         # Name comparison
         name_similarity = SequenceMatcher(
             None,
@@ -134,18 +149,21 @@ class ArtistGuessGame(BaseGame):
         if feedback['is_correct'] or self.session.current_tries >= self.session.max_tries:
             feedback['target_artist'] = {
                 'name': cached_target['name'],
-                'image_url':   cached_target['image.url'],
+                'image_url':   cached_target['image_url'],
                 'favorite_song': {
                     'name': cached_target['most_popular_song'],
-                    'preview_url': cached_target['most_popular_song_url']
+                    'preview_url': cached_target['most_popular_track_uri']
                 }
             }
+            animation = 'celebration-bounce' if feedback['is_correct'] else 'fade-in-up'
             feedback['animation_effects'].append({
                 'element': 'artist_reveal',
-                'animation': 'fade-in-up'
+                'animation': animation
             })
             
-            return feedback
+            self.end_game(score=self.state.current_state['session_state']['score'])
+                    
+        return feedback
         
     def _compare_values(self, attr, guess_val, target_val):
         """Compare values with null handling."""
@@ -177,7 +195,7 @@ class ArtistGuessGame(BaseGame):
         """
         return MostListenedArtist.objects.filter(
             user=self.session.user,
-            name_icontains=query
+            name__icontains=query,
         ).values('name', 'image_url')[:10] # Limit to 10 results
     def _compare_years(self, guess, actual):
         """Compare years with closeness indicator."""
@@ -226,33 +244,44 @@ class ArtistGuessGame(BaseGame):
     def _create_initial_game_state(self, processed_artist, available_artists):
         """Create game state in a separate method"""
         
-        return {
-            'artist_id': processed_artist['id'],
+        game_state = {
+             # Root-level fields (required by frontend and backend)
+            'artist_id': processed_artist['id'],  # MOVE TO ROOT LEVEL
             'revealed_info': {
                 'genres': processed_artist['genres'],
                 'country': processed_artist['country']
             },
-            'available_artists': [
-                {
-                    'name': a.name,
-                    'image_url': a.image_url or '/static/default_artist.png'
-                    }
-                for a in available_artists
-                if a.name
-                ],
-            'remaining_attributes': [
-                attr for attr in [
-                'debut_year',
-                'birth_year',
-                'num_albums',
-                'members_count',
-                'gender',
-                'popularity'
-            ]
-            if getattr(processed_artist, attr) is not None # Only include non-null attributes
-            ],
-            'feedback': None,
-            'guess_count': 0,
-            'max_tries': self.session.max_tries,
-            'is_complete': False
-        }
+            'session_state': {
+                'tries_left': self.session.max_tries,
+                'is_complete': False,
+                'score': 0
+            },
+            # Keep other data under metadata
+            '_metadata': {
+                'available_artists': [
+                    {
+                        'name': a.name,
+                        'image_url': a.image_url or '/static/default_artist.png'
+                        }
+                    for a in available_artists
+                    if a.name
+                    ],
+                'remaining_attributes': {
+                    attr: processed_artist[attr] for attr in [
+                        'debut_year',
+                        'birth_year',
+                        'num_albums',
+                        'members',
+                        'gender',
+                        'popularity',
+                    ]
+                if processed_artist.get(attr) is not None # Only include non-null attributes
+                }
+            }
+             }
+        
+        self.state.current_state = game_state
+        self.state.save()
+        
+        return game_state
+        
