@@ -194,7 +194,9 @@ OPENAI_API_KEY = config("OPENAI_API_KEY")
 TOGETHER_API_KEY = config("TOGETHER_API_KEY")
 HUGGINGFACE_API_KEY = config("HUGGINGFACE_API_KEY")
 PALM_API_KEY = config("PALM_API_KEY")
-SPOTIFY_AUTH_HEADER = f"Basic {base64.b64encode(f'{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}'.encode()).decode()}"
+EGWU_CLIENT_ID = config("EGWU_CLIENT_ID")
+EGWU_CLIENT_SECRET = config("EGWU_CLIENT_SECRET")
+SPOTIFY_AUTH_HEADER = base64.b64encode(f'{EGWU_CLIENT_ID}:{EGWU_CLIENT_SECRET}'.encode()).decode()
 
 LOGGING = {
     "version": 1,  # Logging configuration version

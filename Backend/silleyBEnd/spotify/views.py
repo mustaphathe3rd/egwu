@@ -353,6 +353,10 @@ class PlaybackTokenView(APIView):
 
     def get(self, request):
         try:
+            logger.debug(f"SPOTIFY_AUTH_HEADER: Basic {settings.SPOTIFY_AUTH_HEADER}")
+            # Add temporary debug logging
+            logger.debug(f"Client ID length: {len(settings.EGWU_CLIENT_ID)}")
+            logger.debug(f"Client Secret length: {len(settings.EGWU_CLIENT_SECRET)}")
             # Check for existing valid playback token
             playback_token = SpotifyPlaybackToken.objects.filter(
                 user=request.user,
