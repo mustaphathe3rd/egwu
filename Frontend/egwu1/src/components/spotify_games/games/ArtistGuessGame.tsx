@@ -9,7 +9,7 @@ import {
   AlertDialogDescription,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+} from "@/components/ui/alert-dialog";
 import api from '@/services/api';
 import { generateSpotifyWebPlaybackToken } from '@/utils/spotifyToken';
 import { useNavigate } from 'react-router-dom';
@@ -44,6 +44,7 @@ interface TargetArtist {
   favorite_song: {
     name: string;
     preview_url: string;
+    uri?: string;
   };
 }
 
@@ -62,7 +63,7 @@ interface GuessFeedback {
   target_artist?: TargetArtist;
 }
 
-const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, onGameComplete}) => {
+const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, onGameComplete, onHomeClick }) => {
   const [gameState, setGameState] = useState({
     revealed_info: initialState.revealed_info || {},
     session_state: initialState.session_state || {
@@ -81,12 +82,38 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
   const [isPlaying, setIsPlaying] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [player, setPlayer] = useState<any>(null);
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const navigate = useNavigate();
+  
+  // Use the passed onHomeClick prop instead of defining a new one
   const handleHomeClick = () => {
-    navigate('/games/dashboard');
-  }
+    if (onHomeClick) {
+      onHomeClick();
+    } else {
+      navigate('/games/dashboard');
+    }
+  };
 
+  // Initial fetch for the token
   useEffect(() => {
+    const fetchToken = async () => {
+      try {
+        const spotifyToken = await generateSpotifyWebPlaybackToken();
+        setToken(spotifyToken);
+      } catch (error) {
+        console.error('Failed to fetch token:', error);
+        setError('Failed to connect to Spotify. Please try again later.');
+      }
+    };
+    
+    fetchToken();
+  }, []);
+
+  // Initialize Spotify Web Player SDK once we have a token
+  useEffect(() => {
+    if (!token) return;
+    
     const script = document.createElement("script");
     script.src = "https://sdk.scdn.co/spotify-player.js";
     script.async = true;
@@ -95,30 +122,48 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
     window.onSpotifyWebPlaybackSDKReady = () => {
       const spotifyPlayer = new window.Spotify.Player({
         name: 'Artist Guess Game Player',
-        getOAuthToken: async (cb: (token: string) => void) => {
-          try {
-            const token = await generateSpotifyWebPlaybackToken();
-            cb(token);
-          } catch (error) {
-            console.error('Failed to get Spotify token:', error);
-          }
-        }
+        getOAuthToken: (cb: (token: string) => void) => {
+          cb(token);
+        },
+        volume: 0.5
       });
 
-      spotifyPlayer.connect().then((success: boolean) => {
-        if (success) {
-          setPlayer(spotifyPlayer);
-        }
+      // Add listeners
+      spotifyPlayer.addListener('ready', ({ device_id }: { device_id: string }) => {
+        console.log('Ready with Device ID', device_id);
+        setDeviceId(device_id);
       });
+
+      spotifyPlayer.addListener('player_state_changed', (state: any) => {
+        if (!state) return;
+        setIsPlaying(!state.paused);
+      });
+
+      spotifyPlayer.connect()
+        .then((success: boolean) => {
+          if (success) {
+            console.log('Successfully connected to Spotify');
+            setPlayer(spotifyPlayer);
+          } else {
+            console.error('Failed to connect to Spotify player');
+          }
+        })
+        .catch((error: any) => {
+          console.error('Spotify player connection error:', error);
+        });
     };
 
     return () => {
-      script.remove();
       if (player) {
         player.disconnect();
       }
+      // Check if the script is still in the document before removing
+      const scriptElement = document.querySelector('script[src="https://sdk.scdn.co/spotify-player.js"]');
+      if (scriptElement && scriptElement.parentNode) {
+        scriptElement.parentNode.removeChild(scriptElement);
+      }
     };
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     if (gameState.session_state?.is_complete) {
@@ -165,10 +210,7 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
 
         if (response.data.feedback.target_artist) {
           setTargetArtist(response.data.feedback.target_artist);
-          if (response.data.feedback.target_artist.favorite_song?.preview_url && player) {
-            player.resume();
-            setIsPlaying(true);
-          }
+          // We'll handle playback separately when the Play button is clicked
         }
       }
     } catch (err: any) {
@@ -180,15 +222,49 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
     }
   };
 
+  // Helper function to play a track using the Spotify API
+  const playTrack = async (uri: string) => {
+    if (!deviceId || !token) {
+      setError('Spotify player not ready');
+      return;
+    }
+
+    try {
+      await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          uris: [uri]
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      setIsPlaying(true);
+    } catch (error) {
+      console.error('Playback error:', error);
+      setError('Failed to play track');
+    }
+  };
+
   const togglePlayback = () => {
-    if (!player) return;
+    if (!player || !targetArtist) return;
 
     if (isPlaying) {
       player.pause();
+      setIsPlaying(false);
     } else {
-      player.resume();
+      // If there's a URI available, use that for better playback
+      if (targetArtist.favorite_song.uri) {
+        playTrack(targetArtist.favorite_song.uri);
+      } else {
+        // Fallback to preview URL if available
+        if (targetArtist.favorite_song.preview_url) {
+          player.resume();
+          setIsPlaying(true);
+        }
+      }
     }
-    setIsPlaying(!isPlaying);
   };
 
   const getStatusColor = (status: string) => {
@@ -210,11 +286,33 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
       setGuesses([]);
       setTargetArtist(null);
       setError(null);
+      if (player && isPlaying) {
+        player.pause();
+        setIsPlaying(false);
+      }
     } catch (err) {
       console.error('Failed to restart game');
     }
   };
 
+  // Login component if no token
+  if (!token) {
+    return (
+      <div className="flex flex-col items-center justify-center">
+        <h1 className="text-2xl font-bold mb-6">Connect to Spotify</h1>
+        <p className="mb-6 text-center text-white/70">
+          To use the Spotify playback features, you need to connect your Spotify account.
+        </p>
+        <Button 
+          onClick={() => window.location.href = '/auth/login'} 
+          className="bg-green-600 hover:bg-green-700"
+        >
+          Connect to Spotify
+        </Button>
+      </div>
+    );
+  }
+  
   return (
     <div className="space-y-6">
       <Card className="bg-white/10 border-0">
@@ -342,12 +440,13 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
                       <RefreshCw className="h-4 w-4 mr-2" />
                       Play Again
                     </Button>
-                    {targetArtist.favorite_song.preview_url && (
+                    {(targetArtist.favorite_song.preview_url || targetArtist.favorite_song.uri) && (
                       <Button
                         onClick={togglePlayback}
                         variant="ghost"
                         size="sm"
                         className="hover:bg-white/10"
+                        disabled={!player || !deviceId}
                       >
                         {isPlaying ? (
                           <Pause className="h-6 w-6 text-white" />
@@ -422,18 +521,17 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
               <AlertDialogHeader>
                 <AlertDialogTitle>How to Play</AlertDialogTitle>
                 <AlertDialogDescription className="space-y-2">
-                
-                   <p>Welcome to the Artist Guess Game! Here's how to play:</p>
-                   <ul className="list-disc pl-4">
-                     <li>You start with initial hints about the artist's genre and country</li>
-                     <li>Each guess reveals more information about the target artist</li>
-                     <li>Green boxes indicate exact matches</li>
+                  <p>Welcome to the Artist Guess Game! Here's how to play:</p>
+                  <ul className="list-disc pl-4">
+                    <li>You start with initial hints about the artist's genre and country</li>
+                    <li>Each guess reveals more information about the target artist</li>
+                    <li>Green boxes indicate exact matches</li>
                     <li>Yellow boxes indicate close matches</li>
                     <li>Red boxes indicate incorrect values</li>
-                   <li>You have 10 tries to guess the correct artist</li>
-                 </ul>
-               </AlertDialogDescription>
-             </AlertDialogHeader>
+                    <li>You have 10 tries to guess the correct artist</li>
+                  </ul>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
             </AlertDialogContent>
           </AlertDialog>
         </CardContent>

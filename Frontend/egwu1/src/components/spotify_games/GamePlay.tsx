@@ -94,15 +94,6 @@ const GamePlay = () => {
     return (
         <div className="min-h-screen bg-gradient-to-b from-green-900 to-black p-6">
         <div className="max-w-4xl mx-auto">
-            <Button
-            variant="ghost"
-            className="mb-6 text-white"
-            onClick={() => navigate('/games')}
-            >
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Games
-            </Button>
-
             <GameComponent
             sessionId={sessionId!}
             initialState={{

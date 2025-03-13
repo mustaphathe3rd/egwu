@@ -1,14 +1,13 @@
-import api from '@/services/api'
-
 export async function generateSpotifyWebPlaybackToken(): Promise<string> {
     try {
-        const response = await api.get('/playback-token/');
+        const response = await fetch('/auth/token');
         if (!response.ok) {
-            throw new Error('Failed to obtain Spotify playback token');
+            throw new Error('Failed to obtain Spotify token');
         }
-        return response.data.access_token;
+        const data = await response.json();
+        return data.access_token;
     } catch (error) {
-        console.error('Spotify playback token error:', error);
+        console.error('Spotify token error:', error);
         throw error;
     }
 }
