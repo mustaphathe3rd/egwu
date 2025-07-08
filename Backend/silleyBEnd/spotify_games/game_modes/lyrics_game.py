@@ -1,6 +1,7 @@
 from .base import BaseGame
 from ..services.ai_service import AIService
 from ..services.cache_service import GameCacheService
+from ..services.normalization_service import SemanticNormalizer
 import random
 from difflib import SequenceMatcher
 from datetime import timezone
@@ -31,12 +32,13 @@ class LyricsGame(BaseGame):
         self.input_type ='voice' if session.game_type == 'lyrics_voice' else 'text'
         self.ai_service = AIService()
         self.cache_service = GameCacheService()
+        self.normalizer = SemanticNormalizer()
         
         
     def _initialize_game_impl(self, input_type='text'):
         """Initialize the game with multiple challenges from different songs."""
         # Check cache first
-        cached_game = self.get_cached_game('lyrics')
+        cached_game = self.get_cached_game('lyrics_text')
         if cached_game:
             return cached_game
         
@@ -63,20 +65,24 @@ class LyricsGame(BaseGame):
             try:
                 # Get 2-3 challenges per song
                 num_challenges = random.randint(2, 3)
-                song_challenges = self.ai_service.generate_lyrics_challenges(song.lyrics, num_challenges)
                 
-                # Add song information to each challenge
-                for challenge in song_challenges:
-                    if "error" not in challenge:
-                        challenge["song_data"] = {
-                            "name": song.name,
-                            "artist": song.artist,
-                            "album_image": song.image_url,
-                            "spotify_id": song.spotify_id,
-                            "track_uri": song.track_uri,
-                        }
-                    all_challenges.append(challenge)
-                    
+                # Pass song data to the challenge generator
+                song_data_for_ai = {
+                    "name": song.name,
+                    "artist": song.artist,
+                    "album_image": song.image_url,
+                    "spotify_id": song.spotify_id,
+                    "track_uri": song.track_uri,
+                }
+                
+                song_challenges = self.ai_service.generate_lyrics_challenges(
+                    song.lyrics,
+                    num_challenges,
+                    song_data_for_ai
+                )
+                
+                all_challenges.extend(song_challenges)
+                
             except Exception as e:
                 logger.error(f"Error generating challenges for song {song.name}: {str(e)}")
                 continue
@@ -99,7 +105,7 @@ class LyricsGame(BaseGame):
         }
         
         # Cache the game state
-        self.cache_game('lyrics', game_state)
+        self.cache_game('lyrics_text', game_state)
         
         return game_state
     
@@ -165,97 +171,106 @@ class LyricsGame(BaseGame):
             challenges.append(challenge)
         return challenges[:10]  # Limit to 10 challenges
             
-    def _calculate_similarity(self, user_answer: str, correct_lyrics: str, input_type: str = 'text') -> float:
-        """Calculate similarity with improved text normalization."""
-        def normalize_text(text: str) -> str:
-            text = ''.join(text.lower().split())
-            if input_type == 'voice':
-                # Additional normalization for voice input
-                text = text.replace('gonna', 'going to')
-                text = text.replace('wanna', 'want to')
-                text = text.replace('gotta', 'got to')
-                # Remove common speech recognition artifacts
-                text = text.replace('.', '')
-                text = text.replace(',','')
-            return text
+    # def _calculate_similarity(self, user_answer: str, correct_lyrics: str, input_type: str = 'text') -> float:
+    #     """Calculate similarity with improved text normalization."""
+    #     def normalize_text(text: str) -> str:
+    #         text = ''.join(text.lower().split())
+    #         if input_type == 'voice':
+    #             # Additional normalization for voice input
+    #             text = text.replace('gonna', 'going to')
+    #             text = text.replace('wanna', 'want to')
+    #             text = text.replace('gotta', 'got to')
+    #             # Remove common speech recognition artifacts
+    #             text = text.replace('.', '')
+    #             text = text.replace(',','')
+    #         return text
         
-        normalized_user = normalize_text(user_answer)
-        normalized_correct = normalize_text(correct_lyrics)
+    #     normalized_user = normalize_text(user_answer)
+    #     normalized_correct = normalize_text(correct_lyrics)
         
-        # For voice input, also consider word-by-word matching
-        if input_type == 'voice':
-            word_match_ratio = self._calculate_word_match_ratio(
-                normalized_user.split(),
-                normalized_correct.split()
-            )
-            sequence_ratio = SequenceMatcher(
-                None,
-                normalized_user,
-                normalized_correct,
-            ).ratio()
-            # Weight both methods
-            return (word_match_ratio + sequence_ratio) / 2
+    #     # For voice input, also consider word-by-word matching
+    #     if input_type == 'voice':
+    #         word_match_ratio = self._calculate_word_match_ratio(
+    #             normalized_user.split(),
+    #             normalized_correct.split()
+    #         )
+    #         sequence_ratio = SequenceMatcher(
+    #             None,
+    #             normalized_user,
+    #             normalized_correct,
+    #         ).ratio()
+    #         # Weight both methods
+    #         return (word_match_ratio + sequence_ratio) / 2
         
-        return SequenceMatcher(
-            None,
-            normalize_text(user_answer),
-            normalize_text(correct_lyrics)
-        ).ratio()
+    #     return SequenceMatcher(
+    #         None,
+    #         normalize_text(user_answer),
+    #         normalize_text(correct_lyrics)
+    #     ).ratio()
         
-    def _calculate_word_match_ratio(self, user_words: List[str], correct_words: List[str]) -> float:
-        """Calculate ratio of matching words, allowing for minor variations."""
-        matches = 0
-        total_words = len(correct_words)
+    # def _calculate_word_match_ratio(self, user_words: List[str], correct_words: List[str]) -> float:
+    #     """Calculate ratio of matching words, allowing for minor variations."""
+    #     matches = 0
+    #     total_words = len(correct_words)
         
-        for user_word in user_words:
-            for correct_word in correct_words:
-                if (user_word == correct_word or
-                    SequenceMatcher(None, user_word, correct_word).ratio() > 0.8):
-                    mathces += 1
-                    break
+    #     for user_word in user_words:
+    #         for correct_word in correct_words:
+    #             if (user_word == correct_word or
+    #                 SequenceMatcher(None, user_word, correct_word).ratio() > 0.8):
+    #                 matches += 1
+    #                 break
         
-        return matches / total_words if total_words > 0 else 0
+    #     return matches / total_words if total_words > 0 else 0
     
-    def _validate_answer_impl(self, user_answer: str, input_type: str ='text') -> dict:
-        """
-        Validate the user's answer against the correct lyrics.
+    def _validate_answer_impl(self, answer_data):
+        user_answer = answer_data.get('answer', '')
+        if not user_answer:
+            raise GameError("No answer provided")
+
+        current_game_state = self.state.current_state
+        challenge_index = current_game_state.get('current_challenge_index', 0)
         
-        Args:
-            user_answer (str): The user's submitted answer
+        if challenge_index >= len(current_game_state.get('challenge', [])):
+            raise GameError("Challenge index is out of bounds.")
             
-        Returns:
-            dict: Validation results including score, feedback, and game state
-        """
+        current_challenge = current_game_state['challenge'][challenge_index]
         
-        #Get current gamr state from cache
-        current_game = self.get_cached_game('lyrics')
-        if not current_game:
-           raise GameError("Game Session not found")
-            
-        correct_lyrics = current_game['challenge']['missing_portion']
+        if 'missing_portion' not in current_challenge:
+            # Handle malformed challenge from AI
+            current_game_state['current_challenge_index'] += 1
+            self.state.update_state(current_game_state)
+            return { 'is_correct': False, 'score': self.session.score, 'feedback': 'Skipping invalid challenge.', 'completed': False, 'new_state': current_game_state }
+
+        correct_lyrics = current_challenge['missing_portion']
+        is_correct = self.normalizer.are_answers_similar(user_answer, correct_lyrics)
         
-        similarity = self._calculate_similarity(user_answer, correct_lyrics)
-    
-       # Use different thresholds for text vs voice input
-        threshold = self.SIMILARITY_THRESHOLDS.get(input_type, 0.9)
-        is_correct = similarity >= threshold
+        score = self.session.score + 10 if is_correct else self.session.score
         
-        # Calculate score based on similarity
-        score = int(similarity * 100) if is_correct else 0
-        
-        # Update session if correct
-        if is_correct:
+        # Update game state for the next round
+        current_game_state['current_challenge_index'] += 1
+        current_game_state['score'] = score
+        self.session.score = score
+
+        is_complete = current_game_state['current_challenge_index'] >= len(current_game_state['challenge'])
+
+        if is_complete:
             self.end_game(score=score)
+        else:
+            # Update the database with the clean state object
+            self.state.update_state(current_game_state)
         
-        return {
+        # Construct the full response for the frontend
+        response_to_frontend = {
             'is_correct': is_correct,
             'score': score,
-            'feedback': self._generate_feedback(similarity, correct_lyrics),
-            'correct_lyrics': correct_lyrics if is_correct else None,
-            'similarity': round(similarity * 100, 2),
-            'game_completed': self.session.completed
+            'feedback': 'Correct!' if is_correct else "Not quite, try the next one!",
+            'correct_lyrics': correct_lyrics if not is_correct else None,
+            'completed': is_complete,
+            'new_state': current_game_state, # It's safe to send this to the frontend
         }
         
+        return response_to_frontend
+            
     def _generate_feedback(self, similarity: float, input_type: str = 'text') -> str:
         """
         Generate appropriate feedback based on similarity and input type.

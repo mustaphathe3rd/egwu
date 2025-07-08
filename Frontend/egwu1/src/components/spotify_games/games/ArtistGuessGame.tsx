@@ -26,8 +26,13 @@ declare global {
 
 interface ArtistGuessProps {
   sessionId: string;
-  initialState: {
-    revealed_info: any;
+  initialState: { // This shape is correct and matches the backend
+    game_data: {
+      revealed_info: {
+        genres?: string;
+        country?: string;
+      };
+    };
     session_state: {
       tries_left: number;
       is_complete: boolean;
@@ -64,15 +69,7 @@ interface GuessFeedback {
 }
 
 const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, onGameComplete, onHomeClick }) => {
-  const [gameState, setGameState] = useState({
-    revealed_info: initialState.revealed_info || {},
-    session_state: initialState.session_state || {
-      tries_left: 10,
-      is_complete: false,
-      score: 0
-    },
-    guesses: []
-  });
+  const [gameState, setGameState] = useState(initialState);
   const [guesses, setGuesses] = useState<GuessFeedback[]>([]);
   const [guess, setGuess] = useState('');
   const [loading, setLoading] = useState(false);
@@ -83,7 +80,7 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
   const [showRules, setShowRules] = useState(false);
   const [player, setPlayer] = useState<any>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
+  const [isPlayerReady, setIsPlayerReady] = useState(false);
   const navigate = useNavigate();
   
   // Use the passed onHomeClick prop instead of defining a new one
@@ -95,75 +92,66 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
     }
   };
 
-  // Initial fetch for the token
-  useEffect(() => {
-    const fetchToken = async () => {
-      try {
-        const spotifyToken = await generateSpotifyWebPlaybackToken();
-        setToken(spotifyToken);
-      } catch (error) {
-        console.error('Failed to fetch token:', error);
-        setError('Failed to connect to Spotify. Please try again later.');
-      }
-    };
-    
-    fetchToken();
-  }, []);
+   useEffect(() => {
+    const initializePlayer = () => {
+        if (window.Spotify && !player) {
+            const spotifyPlayer = new window.Spotify.Player({
+                name: 'Artist Guess Game Player',
+                // This function is the KEY. The SDK calls it whenever it needs a new, valid token.
+                getOAuthToken: (cb: (token: string) => void) => {
+                    console.log("SDK requested a token.");
+                    generateSpotifyWebPlaybackToken()
+                        .then(token => {
+                            if (token) {
+                                cb(token);
+                            }
+                        })
+                        .catch(err => console.error("Error getting token for SDK:", err));
+                },
+                volume: 0.5
+            });
 
-  // Initialize Spotify Web Player SDK once we have a token
-  useEffect(() => {
-    if (!token) return;
-    
-    const script = document.createElement("script");
-    script.src = "https://sdk.scdn.co/spotify-player.js";
-    script.async = true;
-    document.body.appendChild(script);
+            spotifyPlayer.addListener('ready', ({ device_id }: { device_id: string }) => {
+                console.log('Player is ready with Device ID', device_id);
+                setDeviceId(device_id);
+                setIsPlayerReady(true);
+            });
 
-    window.onSpotifyWebPlaybackSDKReady = () => {
-      const spotifyPlayer = new window.Spotify.Player({
-        name: 'Artist Guess Game Player',
-        getOAuthToken: (cb: (token: string) => void) => {
-          cb(token);
-        },
-        volume: 0.5
-      });
+            spotifyPlayer.addListener('not_ready', ({ device_id }: { device_id: string }) => {
+                console.log('Device ID has gone offline', device_id);
+            });
 
-      // Add listeners
-      spotifyPlayer.addListener('ready', ({ device_id }: { device_id: string }) => {
-        console.log('Ready with Device ID', device_id);
-        setDeviceId(device_id);
-      });
+            spotifyPlayer.addListener('authentication_error', ({ message }: { message: string }) => {
+                console.error('Authentication Error:', message);
+                setError("Spotify authentication failed. Please refresh and try again.");
+            });
 
-      spotifyPlayer.addListener('player_state_changed', (state: any) => {
-        if (!state) return;
-        setIsPlaying(!state.paused);
-      });
+            spotifyPlayer.connect().then((success: boolean) => {
+                if (success) {
+                    console.log('The Web Playback SDK has successfully connected.');
+                }
+            });
 
-      spotifyPlayer.connect()
-        .then((success: boolean) => {
-          if (success) {
-            console.log('Successfully connected to Spotify');
             setPlayer(spotifyPlayer);
-          } else {
-            console.error('Failed to connect to Spotify player');
-          }
-        })
-        .catch((error: any) => {
-          console.error('Spotify player connection error:', error);
-        });
+        }
     };
+
+    if (!window.Spotify) {
+        const script = document.createElement("script");
+        script.src = "https://sdk.scdn.co/spotify-player.js";
+        script.async = true;
+        document.body.appendChild(script);
+        window.onSpotifyWebPlaybackSDKReady = initializePlayer;
+    } else {
+        initializePlayer();
+    }
 
     return () => {
-      if (player) {
-        player.disconnect();
-      }
-      // Check if the script is still in the document before removing
-      const scriptElement = document.querySelector('script[src="https://sdk.scdn.co/spotify-player.js"]');
-      if (scriptElement && scriptElement.parentNode) {
-        scriptElement.parentNode.removeChild(scriptElement);
-      }
+        if (player) {
+            player.disconnect();
+        }
     };
-  }, [token]);
+}, []); // Empty dependency array ensures this runs only once.
 
   useEffect(() => {
     if (gameState.session_state?.is_complete) {
@@ -188,7 +176,11 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
     }
   };
 
-  const handleGuess = async () => {
+  // In ArtistGuessGame.tsx
+
+// In ArtistGuessGame.tsx, replace the whole function
+
+const handleGuess = async () => {
     if (!guess) return;
 
     setLoading(true);
@@ -199,74 +191,73 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
         artist_name: guess
       });
 
-      setGameState(prevState => ({
-        ...prevState,
-        session_state: response.data.session_state,
-        revealed_info: response.data.revealed_info || prevState.revealed_info
-      }));
+      // =======================================================
+      // ADDED DEBUGGING LOGS
+      // =======================================================
+      console.log("--- DEBUG START: API Response ---");
+      console.log("Full response.data:", response.data);
+      console.log("Value of response.data.state:", response.data.state);
+      console.log("--- DEBUG END: API Response ---");
+
+
+      if (response.data.state) {
+        setGameState(response.data.state);
+      }
 
       if (response.data.feedback) {
         setGuesses(prev => [...prev, response.data.feedback]);
 
         if (response.data.feedback.target_artist) {
           setTargetArtist(response.data.feedback.target_artist);
-          // We'll handle playback separately when the Play button is clicked
         }
       }
+
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to submit guess');
+      console.error("Error in handleGuess:", err); // Also log the error object
     } finally {
       setLoading(false);
       setGuess('');
       setSuggestions([]);
     }
-  };
+};
 
-  // Helper function to play a track using the Spotify API
-  const playTrack = async (uri: string) => {
-    if (!deviceId || !token) {
-      setError('Spotify player not ready');
-      return;
+  // In Frontend/egwu1/src/components/spotify_games/games/ArtistGuessGame.tsx
+
+const togglePlayback = async () => {
+    // Basic checks to ensure the player and song are ready
+    if (!player) {
+        setError("Player is not ready. Please wait a moment.");
+        return;
+    }
+    if (!targetArtist?.favorite_song?.uri) {
+        setError("No song is available to play for this artist.");
+        return;
     }
 
     try {
-      await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          uris: [uri]
-        }),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      setIsPlaying(true);
-    } catch (error) {
-      console.error('Playback error:', error);
-      setError('Failed to play track');
+        console.log("Toggling playback...");
+
+        // =======================================================
+        // THE FINAL FIX IS HERE: Use the official togglePlay() method
+        // This is safer and handles all internal state for us.
+        // =======================================================
+        await player.togglePlay();
+
+        // After toggling, we can check the new state to set our button correctly.
+        setTimeout(async () => {
+            const updatedPlayerState = await player.getCurrentState();
+            if (updatedPlayerState) {
+                setIsPlaying(!updatedPlayerState.paused);
+            }
+        }, 100); // A small delay to allow the state to update
+
+    } catch (err) {
+        console.error("Error during togglePlayback command:", err);
+        setError("Could not toggle playback. Please try again.");
     }
-  };
-
-  const togglePlayback = () => {
-    if (!player || !targetArtist) return;
-
-    if (isPlaying) {
-      player.pause();
-      setIsPlaying(false);
-    } else {
-      // If there's a URI available, use that for better playback
-      if (targetArtist.favorite_song.uri) {
-        playTrack(targetArtist.favorite_song.uri);
-      } else {
-        // Fallback to preview URL if available
-        if (targetArtist.favorite_song.preview_url) {
-          player.resume();
-          setIsPlaying(true);
-        }
-      }
-    }
-  };
-
+};
+  
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'exact': return 'bg-green-500/50';
@@ -277,12 +268,17 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
 
   const handleRestart = async () => {
     try {
-      const response = await api.post(`/games/api/sessions/${sessionId}/restart/`);
-      setGameState({
-        revealed_info: response.data.revealed_info,
-        session_state: response.data.session_state,
-        guesses: []
-      });
+      // The API returns the new session data on restart
+      const response = await api.post(`/games/api/sessions/${sessionId}/restart_game/`);
+
+      // The backend sends the complete, new initial state. Let's use it directly.
+      // Based on your logs, the new state is at: response.data.session.state
+      const newGameState = response.data.state;
+
+      // Update the component's state with the new object from the backend
+      setGameState(newGameState);
+
+      // Also reset the other local states in the component
       setGuesses([]);
       setTargetArtist(null);
       setError(null);
@@ -291,28 +287,11 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
         setIsPlaying(false);
       }
     } catch (err) {
-      console.error('Failed to restart game');
+      console.error('Failed to restart game:', err);
+      setError("Could not restart the game. Please try again.");
     }
-  };
+};
 
-  // Login component if no token
-  if (!token) {
-    return (
-      <div className="flex flex-col items-center justify-center">
-        <h1 className="text-2xl font-bold mb-6">Connect to Spotify</h1>
-        <p className="mb-6 text-center text-white/70">
-          To use the Spotify playback features, you need to connect your Spotify account.
-        </p>
-        <Button 
-          onClick={() => window.location.href = '/auth/login'} 
-          className="bg-green-600 hover:bg-green-700"
-        >
-          Connect to Spotify
-        </Button>
-      </div>
-    );
-  }
-  
   return (
     <div className="space-y-6">
       <Card className="bg-white/10 border-0">
@@ -342,11 +321,11 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-white/70 mb-1">Genre</p>
-                  <p className="text-white">{gameState.revealed_info?.genres}</p>
+                  <p className="text-white">{gameState.game_data?.revealed_info?.genres}</p>
                 </div>
                 <div>
                   <p className="text-white/70 mb-1">Country</p>
-                  <p className="text-white">{gameState.revealed_info?.country}</p>
+                  <p className="text-white">{gameState.game_data?.revealed_info?.country}</p>
                 </div>
               </div>
             </div>
@@ -433,13 +412,31 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
                   </div>
 
                   <div className="flex gap-4 justify-center">
-                    <Button 
-                      onClick={handleRestart}
-                      className="bg-blue-600 hover:bg-blue-700"
-                    >
-                      <RefreshCw className="h-4 w-4 mr-2" />
-                      Play Again
-                    </Button>
+              <Button
+                onClick={togglePlayback}
+                className="bg-blue-600 hover:bg-blue-700 transition-opacity"
+                // Add the disabled attribute here
+                disabled={!isPlayerReady || loading}
+                >
+                {/* Add a loading indicator to the button */}
+                {!isPlayerReady && !loading ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                    <Play className="h-4 w-4 mr-2" />
+                )}
+                
+                {/* Change the button text based on the state */}
+                {loading ? 'Starting...' : (isPlayerReady ? 'Play Song' : 'Player Loading...')}
+            </Button>
+
+            <Button
+                onClick={handleRestart}
+                variant="outline"
+                className="bg-transparent hover:bg-white/10"
+                >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Restart Game
+            </Button>
                     {(targetArtist.favorite_song.preview_url || targetArtist.favorite_song.uri) && (
                       <Button
                         onClick={togglePlayback}
@@ -521,15 +518,15 @@ const ArtistGuessGame: React.FC<ArtistGuessProps> = ({ sessionId, initialState, 
               <AlertDialogHeader>
                 <AlertDialogTitle>How to Play</AlertDialogTitle>
                 <AlertDialogDescription className="space-y-2">
-                  <p>Welcome to the Artist Guess Game! Here's how to play:</p>
-                  <ul className="list-disc pl-4">
+                  <div>Welcome to the Artist Guess Game! Here's how to play:</div>
+                  <div className="list-disc pl-4">
                     <li>You start with initial hints about the artist's genre and country</li>
                     <li>Each guess reveals more information about the target artist</li>
                     <li>Green boxes indicate exact matches</li>
                     <li>Yellow boxes indicate close matches</li>
                     <li>Red boxes indicate incorrect values</li>
                     <li>You have 10 tries to guess the correct artist</li>
-                  </ul>
+                  </div>
                 </AlertDialogDescription>
               </AlertDialogHeader>
             </AlertDialogContent>

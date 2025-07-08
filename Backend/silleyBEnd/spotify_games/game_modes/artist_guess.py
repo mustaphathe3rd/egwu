@@ -4,6 +4,7 @@ from difflib import SequenceMatcher
 from datetime import datetime
 from django.db.models import Q
 from ..services.cache_service import GameCacheService
+from ..services.game_state import GameState
 from ..exceptions import *
 import logging
 
@@ -37,7 +38,10 @@ class ArtistGuessGame(BaseGame):
         
     def _initialize_game_impl(self):
         """Initialize a new artist guessing game session."""
-        # Get random artist from user's most listened
+        #Check if we have a completed game
+        if self.session.completed:
+            # If we're trying to access a completed game, restart it
+            return self.restart_game()
         
         # Check cache first
         cached_game = self.get_cached_game('guess_artist')
@@ -60,13 +64,12 @@ class ArtistGuessGame(BaseGame):
                 processed_artist['most_popular_track_uri'],
             )
         
-        # Get list of all possible artists for autocomplete
-        available_artists = MostListenedArtist.objects.filter(
-            user=self.session.user
-        ).exclude(name__isnull=True)
-            
-        #Initial hints are genre and country
-        game_state = self._create_initial_game_state(processed_artist, available_artists)
+        # Create standardized game state
+        game_state = GameState.create_initial_state(processed_artist, self.session.max_tries)
+        
+        # Save state to session
+        self.state.current_state = game_state
+        self.state.save()
         
         self.cache_game('guess_artist', game_state)
         
@@ -85,8 +88,10 @@ class ArtistGuessGame(BaseGame):
         ).values_list('name', flat=True)
         logger.debug(f"Available artists: {list(available_artists)}")
         
+        current_state = self.state.current_state
+        
         # Check cache for processed artist data
-        target_artist_id = self.state.current_state.get('artist_id')
+        target_artist_id = current_state['game_data'].get('artist_id')
         if not target_artist_id:
             raise GameError("Target artist is not set in the game state")
         
@@ -121,7 +126,7 @@ class ArtistGuessGame(BaseGame):
         
         # Compare only non-null attributes
         for attr in cached_target:
-            if attr in ['name', 'image_url', 'biography']:
+            if attr in ['name', 'image_url', 'biography','id', 'most_popular_song', 'most_popular_track_uri', 'most_popular_song_id']:
                 continue
             
             
@@ -145,22 +150,26 @@ class ArtistGuessGame(BaseGame):
         
         feedback['is_correct'] = name_similarity > 0.9
         
-        # Game completion logic
-        if feedback['is_correct'] or self.session.current_tries >= self.session.max_tries:
+        if feedback['is_correct'] or self.session.current_tries >= self.session.max_tries - 1:
+
             feedback['target_artist'] = {
                 'name': cached_target['name'],
                 'image_url':   cached_target['image_url'],
                 'favorite_song': {
                     'name': cached_target['most_popular_song'],
-                    'preview_url': cached_target['most_popular_track_uri']
+                    # Use 'most_popular_track_uri' for both preview_url and uri
+                    # to match what the frontend expects.
+                    'preview_url': cached_target['most_popular_track_uri'],
+                    'uri': cached_target['most_popular_track_uri']
                 }
             }
-            animation = 'celebration-bounce' if feedback['is_correct'] else 'fade-in-up'
-            feedback['animation_effects'].append({
-                'element': 'artist_reveal',
-                'animation': animation
-            })
-            
+                
+        # Update game state with the new guess
+        updated_state = GameState.update_with_guess(current_state, feedback)
+        self.state.current_state = updated_state
+        self.state.save()
+                    
+        if feedback['is_correct'] or self.session.current_tries >= self.session.max_tries - 1:
             self.end_game(score=self.state.current_state['session_state']['score'])
                     
         return feedback
@@ -238,8 +247,14 @@ class ArtistGuessGame(BaseGame):
         return {'status': 'wrong', 'message': 'Different genre'}
     
     def get_artist_details(self):
-        """Fetch complete artist details from database."""
-        return self.session.artist
+        """Fetch complete artist details from the current game state or database."""
+        artist_id = self.state.current_state.get('game_data', {}).get('artist_id') or self.state.current_state.get('artist_id')
+        if not artist_id:
+            raise GameError("Artist ID not found in game state")
+        artist = MostListenedArtist.objects.filter(spotify_id=artist_id).first()
+        if not artist:
+            raise GameError("Artist not found in database")
+        return self._process_artist_data(artist)
     
     def _create_initial_game_state(self, processed_artist, available_artists):
         """Create game state in a separate method"""

@@ -5,7 +5,7 @@ class GameSession(models.Model):
     GAME_TYPE_CHOICES = [
         ('lyrics_text', 'Lyrics Text Mode'),
         ('lyrics_voice', 'Lyrics Voice Mode'),
-        ('guess_artist, Artist Guess'),
+        ('guess_artist','Artist Guess'),
         ('crossword', 'Crossword'),
         ('trivia', 'Trivia')
     ]

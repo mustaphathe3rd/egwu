@@ -2,28 +2,61 @@ from datetime import timedelta
 from django.db.models import Avg, Max, Sum, Count
 from django.utils import timezone
 from ..models import GameSession, GameStatistics, GameLeaderboard
-
+import logging
+logger = logging.getLogger("spotify_games")
 class AnalyticsService:
     def __init__(self, user):
         self.user = user
         
-    def update_game_statistics(self, session: GameSession):
-        """Update user statistics after game completion."""
+    # In Backend/silleyBEnd/spotify_games/game_modes/base.py
+
+def _update_game_statistics(self, score: int):
+    """Update user's game statistics after a game ends."""
+    try:
         stats, created = GameStatistics.objects.get_or_create(
-            user=self.user,
-            game_type=session.game_type
-        ) 
+            user=self.session.user,
+            game_type=self.session.game_type,
+            defaults={
+                'total_games': 1,
+                'total_score': score,
+                'highest_score': score,
+            }
+        )
+
+        if not created:
+            stats.total_games += 1
+            stats.total_score += score
+            if score > stats.highest_score:
+                stats.highest_score = score
         
-        # Update statistics
-        stats.total_games += 1
-        stats.total_score += session.score
-        stats.highest_score = max(stats.highest_score, session.score)
-        stats.average_score = stats.total_score / stats.total_games
-        stats.total_time_played += session.end_time - session.start_time
+        # Calculate average score
+        if stats.total_games > 0:
+            stats.average_score = stats.total_score / stats.total_games
+        else:
+            stats.average_score = 0
+            
+        # =======================================================
+        # THE FIX IS HERE
+        # =======================================================
+        # 1. Correctly calculate the duration of the current session
+        if self.session.end_time and self.session.start_time:
+            duration = self.session.end_time - self.session.start_time
+            # 2. Add the new duration to the existing total_time_played
+            stats.total_time_played += duration
+        
+        # 3. Save the updated statistics to the database
         stats.save()
         
-        # Update leaderboard if score is significant
-        self._update_leaderboard(session)
+        # Update leaderboard
+        GameLeaderboard.objects.create(
+            user=self.session.user,
+            game_type=self.session.game_type,
+            score=score
+        )
+        logger.info(f"Statistics updated for user {self.session.user.id}")
+
+    except Exception as e:
+        logger.error(f"Failed to update statistics for user {self.session.user.id}: {str(e)}", exc_info=True)
         
     def _update_leaderboard(self, session: GameSession):
         """Update leaderb oard with new game score."""

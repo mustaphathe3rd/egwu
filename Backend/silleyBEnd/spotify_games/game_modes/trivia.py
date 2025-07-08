@@ -18,14 +18,14 @@ class TriviaGame(BaseGame):
         super().__init__(session)
         self.ai_service = AIService()
         self.cache_service = GameCacheService()
-        self.QUESTIONS_PER_GAME = 6
-        self.MIN_ARTISTS = 3
+        self.QUESTIONS_PER_GAME = 10
+        self.MIN_ARTISTS = 4
         self.QIESTIONS_PER_ARTIST = 3
         
         
     def _initialize_game_impl(self):
         """Initialize a new trivia game or retrieve cached game."""
-        cached_game = self.cache_service.get_game_session(self.session.user.id, 'trivia')
+        cached_game = self.cache_service.get_game_session(self.session.id, 'trivia')
         if cached_game:
             logger.debug(f"cached_game: {cached_game}")
             return self._prepare_game_state(cached_game)
@@ -52,7 +52,7 @@ class TriviaGame(BaseGame):
             'status': 'active'
         }
             
-            self.cache_service.cache_game_session(self.session.user.id,'trivia',{'full_state': original_state})
+            self.cache_service.cache_game_session(self.session.id,'trivia',{'full_state': original_state})
             
             frontend_state = self._prepare_game_state(original_state)
             
@@ -64,42 +64,35 @@ class TriviaGame(BaseGame):
             raise GameInitializationError(str(e))
     
     def _generate_questions(self, artists):
-        """Generate andvalidate questions for multiple artists."""
-        all_questions = []
-        min_required_questions = self.QUESTIONS_PER_GAME
-        max_attempts = len(artists) * 2
-        attempts = 0
-        
-        while len(all_questions) < min_required_questions and attempts < max_attempts:
-          # Cycle through artists if needed
-            artist = artists[attempts % len(artists)]
-            attempts += 1
-            
-            try:
+        """Generate and validate questions for multiple artists using a single API call."""
+        if not artists:
+            return []
+
+        try:
+            # Prepare data for all artists
+            all_artists_data = []
+            for artist in artists:
                 artist_data = {
+                    'name': artist.name,
                     'biography': artist.biography,
                     'genres': artist.genres or ['Unknown'],
-                    'career_highlights': {
-                        'debut_year': getattr(artist, 'debut_year', 'Unknown'),
-                        'most_popular_song': getattr(artist, 'most_popular_song', 'Unknown'),
-                        'albums_count': getattr(artist, 'num_albums', 'Unknown'),
-                        'popularity_score': getattr(artist, 'popularity', 'Unknown')
-                    }
+                    'career_highlights': self._get_career_highlights(artist)
                 }
-                
-                new_questions = self.ai_service.generate_trivia_questions(artist_data)
-                if new_questions:  # Only extend if we got valid questions
-                    all_questions.extend(new_questions)
-                    logger.info(f"Generated {len(new_questions)} questions for {artist.name}")
-                
-            except Exception as e:
-                logger.warning(f"Failed to generate questions for {artist.name}: {str(e)}")
-                continue
-                
-        # Shuffle and trim questions
-        random.shuffle(all_questions)
-        return all_questions[:self.QUESTIONS_PER_GAME]
-  
+                all_artists_data.append(artist_data)
+            
+            # Make a single API call for all questions
+            logger.info(f"Generating {self.QUESTIONS_PER_GAME} questions from {len(artists)} artists in a single batch.")
+            questions = self.ai_service.generate_trivia_questions(all_artists_data, self.QUESTIONS_PER_GAME)
+            
+            if questions and len(questions) >= self.QUESTIONS_PER_GAME:
+                random.shuffle(questions)
+                return questions[:self.QUESTIONS_PER_GAME]
+            
+            return []
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate batch of questions: {str(e)}")
+            return []
         
     def _get_valid_artists(self, count):
         """Get an artist with non-null, valid biography."""
@@ -123,8 +116,10 @@ class TriviaGame(BaseGame):
     
     def _prepare_game_state(self, state):
         """Prepare the current game state for frontend consumption"""
-        if not state['questions']:
-           return None
+        game_data = state.get('full_state', state) # Safely get the nested state
+
+        if not game_data.get('questions'):
+            return None
        
         current_q_index = state['current_question']
         if current_q_index >= len(state['questions']):
@@ -140,11 +135,11 @@ class TriviaGame(BaseGame):
             'completed': self.session.completed
         }
         
-    def validate_answer(self, answer_data):
+    def _validate_answer_impl(self, answer_data):
         """Validate an answer submission and update game state."""
         # Get the full game state from cache
         cached_data = self.cache_service.get_game_session(
-            self.session.user.id,
+            self.session.id,
             'trivia'
         )
         
@@ -193,15 +188,26 @@ class TriviaGame(BaseGame):
 
         # Cache the updated state
         self.cache_service.cache_game_session(
-            self.session.user.id,
+            self.session.id,
             'trivia',
             {'full_state': new_state}
         )
 
-        # Return the response for the frontend
+        # Determine the index of the next question
+        next_question_index = new_state['current_question']
+        
+        # Prepare the data for the next question, if it exists
+        next_question_data = {}
+        if not self.session.completed:
+            next_q = full_state['questions'][next_question_index]
+            next_question_data = {
+                'question': next_q.get('question'),
+                'options': next_q.get('options', []),
+            }
+
+        # Return the response for the frontend, combining the result with the next question
         return {
-            'question': current_q.get('question'),
-            'options': current_q.get('options', []),
+            **next_question_data, # This adds the new question and options
             'current_question': new_state['current_question'],
             'total_questions': len(full_state['questions']),
             'score': new_state['score'],
@@ -210,6 +216,7 @@ class TriviaGame(BaseGame):
             'explanation': current_q.get('explanation', ''),
             'completed': self.session.completed
         }
+
 
     def get_current_state(self):
         """Get the current game state."""

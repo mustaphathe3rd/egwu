@@ -70,49 +70,65 @@ class CrosswordGame(BaseGame):
 
         return valid_songs[:count]
 
-    
     def _validate_answer_impl(self, answer_data):
         """
-        Validates answers for crossword puzzle.
-        Expects answer_data to contain a comma-seperated string of words.
+        Validates the user's submitted crossword answers by parsing the grid state.
         """
         try:
-          # Split the incoming comma-separated answer string
-            submitted_words = answer_data.get('answer','').split(',')
-          
-            if not submitted_words:
-                raise GameError("No answers provided")
-          
+            submitted_grid_str = answer_data.get('answer', '')
+            if not submitted_grid_str:
+                raise GameError("No answer grid provided.")
+
+            # Parse the submitted grid string into a 2D list of characters
+            submitted_grid = [list(row) for row in submitted_grid_str.split('\n')]
+
             current_state = self.state.current_state
-            puzzle_data = current_state['puzzle_data']
-          
-            # Check each word against the solution
-            correct_words = []
-            for i, submitted_word in enumerate(submitted_words):
-                if i >= len(puzzle_data['words']):
-                    break
-              
-                if submitted_word.strip().lower() == puzzle_data['words'][i]['word'].lower():
-                    correct_words.append(submitted_word.strip())
-                  
-            # Update solved words
-            current_state = self.get_current_state()
-            current_state['solved_words'] = correct_words
+            solution_words = current_state['puzzle_data']['words']
             
-            # Update the GameState model
-            game_state = self.session.gamestate.first()
-            if game_state:
-                game_state.update_state(current_state)
-        
-            if len(correct_words) == len(puzzle_data['words']):
-                self.end_game(score=100)
-                return True
+            if not solution_words:
+                raise GameError("No solution words found in game state.")
+
+            correct_count = 0
+            total_words = len(solution_words)
+
+            # Iterate through each solution word and check it against the user's grid
+            for word_info in solution_words:
+                solution_word = word_info['word']
+                pos = word_info['position']
+                x, y, direction = pos['x'], pos['y'], pos['direction']
+                
+                user_word = ""
+                # Extract the user's word from their submitted grid based on position
+                for i in range(len(solution_word)):
+                    if direction == 'across':
+                        user_word += submitted_grid[y][x + i]
+                    else: # down
+                        user_word += submitted_grid[y + i][x]
+                
+                # Compare the user's word with the solution
+                if user_word.strip().upper() == solution_word:
+                    correct_count += 1
+
+            score = int((correct_count / total_words) * 100) if total_words > 0 else 0
+            is_complete = correct_count == total_words
             
-            return False
-            
+            if is_complete:
+                self.end_game(score=score)
+
+            return {
+                'is_correct': is_complete,
+                'score': score,
+                'feedback': f'You got {correct_count} out of {total_words} words correct!',
+                'completed': is_complete,
+            }
+
+        except (IndexError, KeyError) as e:
+            logger.error(f"Error parsing crossword answer grid: {e}", exc_info=True)
+            raise GameError("Invalid answer format for crossword grid.")
         except Exception as e:
-            logger.error(f"Error validating crossword answer: {str(e)}")
-            raise GameError("Invalid answer format")
+            logger.error(f"Error validating crossword answer: {e}", exc_info=True)
+            raise GameError("An unexpected error occurred during validation.")
+        
         #Check if
     def get_current_state(self):
         return {

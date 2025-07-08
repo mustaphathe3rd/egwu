@@ -8,9 +8,12 @@ from enum import Enum
 import logging
 import json
 import requests
+import re
 import time
 from google.ai import generativelanguage as glm
-from google.generativeai import GenerativeModel, configure
+from google.generativeai.generative_models import GenerativeModel
+from google.generativeai.client import configure
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 logger = logging.getLogger("spotify_games")
 
@@ -43,282 +46,236 @@ class AIServiceError(Exception):
 
 class AIService:
     def __init__(self):
-        self.api_key = settings.PALM_API_KEY
-        configure(api_key=self.api_key)
-        self.model = GenerativeModel('gemini-pro')
-        self.max_retries = 3
-        
-    def _make_api_request(self, prompt: str) -> str:
-        """Make API request to PaLM with improved error handling"""
-        for attempt in range(self.max_retries):
-           try:
-               response = self.model.generate_content(
-                   prompt,
-                   generation_config={
-                       'temperature': 0.7,
-                       'max_output_tokens': 1024,
-                   }
-                    )
+        # =======================================================
+        # FIX 1: Load and rotate multiple API keys
+        # =======================================================
+        self.api_keys = [key for key in [
+            getattr(settings, 'PALM_API_KEY', None),
+            getattr(settings, 'PALM_API_KEY_2', None)
+        ] if key]
 
-               if not response.parts:
-                   raise AIServiceError("Empty response from API")
-               
-               return response.parts[0].text
-           
-           except Exception as e:
-                if attempt == self.max_retries - 1:
-                    logger.error(f"API request failed after {self.max_retries} attempts: {str(e)}")
-                    raise AIServiceError(f"API request failed: {str(e)}")
+        if not self.api_keys:
+            raise ValueError("No PALM_API_KEY or PALM_API_KEY_2 found in settings.")
+
+        self.max_retries = 3
+
+    def _get_model(self) -> GenerativeModel:
+        """Initializes and returns a model with a randomly chosen API key and disabled safety settings."""
+        api_key = settings.PALM_API_KEY_2
+        configure(api_key=api_key)
+        
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+        
+        model = GenerativeModel(
+            'gemini-1.5-pro-latest',
+            safety_settings=safety_settings
+        )
+        return model
+
+    def _make_api_request(self, prompt: str) -> str:
+        """Make API request with retries and key rotation."""
+        for attempt in range(self.max_retries):
+            try:
+                model = self._get_model()
+                response = model.generate_content(
+                    prompt,
+                    generation_config={
+                        'temperature': 0.7,
+                        'max_output_tokens': 2048, # Increased token limit for larger responses
+                    }
+                )
+
+                if not response.parts:
+                    raise AIServiceError("Empty response from API - likely blocked by safety filters or a model refusal.")
                 
+                return response.text # Use response.text for simplicity
+            
+            except Exception as e:
                 logger.warning(f"API request attempt {attempt + 1} failed: {str(e)}")
-                time.sleep(2 ** attempt) # Exponential backoff
-                
-        raise AIServiceError(f"API request failed after {self.max_retries} attempts")        
-                    
-    def generate_trivia_questions(self, artist_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate trivia questions about an artist"""
-        if not isinstance(artist_data, dict):
-            raise valueError("Artist data must be a dictionary")
+                if attempt == self.max_retries - 1:
+                    logger.error(f"API request failed after all retries: {str(e)}")
+                    raise AIServiceError(f"API request failed: {str(e)}")
+                time.sleep(2 ** attempt)
+                        
+        raise AIServiceError("API request failed after all retries.")
         
-        prompt = f"""Generate 3  multiple choice trivia questions about this artist in english:
+    def generate_trivia_questions(self, artists_data: List[Dict[str, Any]], num_questions: int) -> List[Dict[str, Any]]:
+        """Generate a batch of trivia questions for multiple artists in a single API call."""
+        if not artists_data:
+            raise ValueError("Artists data cannot be empty.")
+
+        context_block = ""
+        for i, artist in enumerate(artists_data, 1):
+            context_block += f"\n---ARTIST {i}---\n"
+            context_block += f"Name: {artist.get('name', 'N/A')}\n"
+            context_block += f"Biography: {artist.get('biography', 'N/A')}\n"
+            context_block += f"Genres: {artist.get('genres', 'N/A')}\n"
+            context_block += f"Career Highlights: {artist.get('career_highlights', 'N/A')}\n"
+
+        # =======================================================
+        # FIX 2: Refined and more direct prompt
+        # =======================================================
+        prompt = f"""
+        CONTEXT:
+        {context_block}
+
+        TASK:
+        Based *only* on the context provided above, generate exactly {num_questions} unique multiple-choice trivia questions about the artists.
+
+        RULES:
+        1. The output MUST be a single, valid JSON array of objects.
+        2. Do NOT include any text, markdown, or explanations outside of the JSON array.
+        3. Each JSON object must have these exact keys: "question", "options" (an array of 4 strings), "correct_answer" (a string that must be one of the options), "explanation" (a brief string), "difficulty" (a string: "easy", "medium", or "hard").
         
-        Biography: {artist_data.get('biography', 'Not provided')}
-        Genres: {', '.join(artist_data.get('genres', ['Unknown']))}
-        Career Highlights: {artist_data.get('career_highlights', 'Not provided')}
-        
-        Format your response exactly like this example, with no additional text:
+        EXAMPLE OUTPUT:
         [
-        {{
-        "question": "What genre is this artist primarily known for?",
-        "options": ["Rock", "Pop", "Jazz", "Hip-Hop"],
-        "correct_answer": "Rock",
-        "explanation": "The artist is primarily known for rock music",
-        "difficulty": "easy"
-        }},
-        {{
-        "question": "In what year did this artist debut?",
-        "options": ["1990", "1995", "2000", "2005"],
-        "correct_answer": "1995",
-        "explanation": "The artist debuted in 1995",
-        "difficulty": "medium"
-        }}
-        ]"""       
+          {{
+            "question": "Which of these artists is primarily known for the 'motown' genre?",
+            "options": ["Artist A", "Artist B", "Artist C", "Artist D"],
+            "correct_answer": "Artist A",
+            "explanation": "Artist A is a legendary motown artist.",
+            "difficulty": "medium"
+          }}
+        ]
+        """
         
-        try: 
+        try:
             response_text = self._make_api_request(prompt)
             
-             # Clean the response text
-            response_text = response_text.strip()
-            if not response_text.startswith('['):
-                # Find the first occurrence of [
-                start_idx = response_text.find('[')
-                if start_idx == -1:
-                    raise AIServiceError("No JSON array found in response")
-                response_text = response_text[start_idx:]
+            # Find the start and end of the JSON array
+            json_start = response_text.find('[')
+            json_end = response_text.rfind(']') + 1
             
-            if not response_text.endswith(']'):
-                # Find the last occurrence of ]
-                end_idx = response_text.rfind(']')
-                if end_idx == -1:
-                    raise AIServiceError("No JSON array found in response")
-                response_text = response_text[:end_idx+1]
-
-            # Parse JSON with error handling
-            try:
-                questions = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing error: {str(e)}")
-                logger.error(f"Problematic response: {response_text}")
-                return []
-
-            # Validate questions
-            validated_questions = []
-            for question in questions:
-                if self._validate_question(question):
-                    validated_questions.append(question)
-
+            if json_start == -1 or json_end == 0:
+                raise AIServiceError("No JSON array found in the AI response.")
+            
+            json_str = response_text[json_start:json_end]
+            
+            questions = json.loads(json_str)
+            validated_questions = [q for q in questions if self._validate_question(q)]
             return validated_questions
 
         except Exception as e:
-            logger.error(f"Error generating trivia questions: {str(e)}")
+            logger.error(f"Error processing AI response for trivia questions: {str(e)}")
             return []
 
     def _validate_question(self, question: Dict) -> bool:
         """Validate a single question"""
         required_fields = ["question", "options", "correct_answer", "explanation", "difficulty"]
-        
-        # Check required fields
-        if not all(field in question for field in required_fields):
-            return False
-            
-        # Validate options
-        if not isinstance(question["options"], list) or len(question["options"]) != 4:
-            return False
-            
-        # Validate correct answer
-        if question["correct_answer"] not in question["options"]:
-            return False
-            
-        # Validate difficulty
-        if question["difficulty"] not in ["easy", "medium", "hard"]:
-            return False
-            
+        if not all(field in question for field in required_fields): return False
+        if not isinstance(question["options"], list) or len(question["options"]) != 4: return False
+        if question["correct_answer"] not in question["options"]: return False
+        if question["difficulty"] not in ["easy", "medium", "hard"]: return False
         return True
-        
+    
     def generate_crossword(self, lyrics: str) -> Dict[str, Any]:
         """Generate a crossword puzzle from lyrics."""
         if not lyrics.strip():
             raise ValueError("Lyrics cannot be empty")
         
-        # Build a prompt that instructs the AI to return only a list of words and clues.
-        prompt = f"""From these lyrics:
-    {lyrics}
+        # =======================================================
+        # FIX 1: Improved AI Prompt
+        # =======================================================
+        prompt = f"""
+        CONTEXT:
+        The following are lyrics from a song:
+        ---
+        {lyrics}
+        ---
 
-    Generate a list of 30 words with clues from the lyrics. Follow these rules exactly:
-    1. Each word MUST be between 3-8 letters long
-    2. Each word MUST contain only letters A-Z
-    3. Each clue MUST end with either (across) or (down)
-    4. Each word must be unique (no duplicates)
-    5. Format must be valid JSON
+        TASK:
+        Generate a list of 15-20 unique words and clues based ONLY on the lyrics provided.
 
-    Return only the JSON in this exact format:
-    {{
-      "words": [
-        {{"word": "LOVE", "clue": "Main emotion in the song (across)"}},
-        {{"word": "LIFE", "clue": "Theme of journey through time (down)"}},
-        // ... more entries
-      ]
-    }}
-    """
+        RULES:
+        1. Each "word" MUST be a single word between 4-8 letters long, found in the lyrics.
+        2. Each "clue" MUST be a short hint about the word's meaning in the context of the lyrics.
+        3. The output MUST be a valid JSON array of objects. Do not include any text outside of the JSON array.
+        4. Each object must have exactly two keys: "word" and "clue". Do not add "(across)" or "(down)".
+
+        EXAMPLE OUTPUT:
+        [
+        {{"word": "HEAVEN", "clue": "A place of eternal bliss mentioned in the song"}},
+        {{"word": "HEART", "clue": "The center of emotion"}},
+        {{"word": "EYES", "clue": "Organs of sight"}}
+        ]
+        """
         try:
             response_text = self._make_api_request(prompt).strip()
             
-            # Clean up response and parse JSON
-            if response_text.startswith('```json'):
-                response_text = response_text[7:]
-            if response_text.endswith('```'):
-                response_text = response_text[:-3]
+            json_start = response_text.find('[')
+            json_end = response_text.rfind(']') + 1
+            if json_start == -1 or json_end == 0:
+                raise AIServiceError("No JSON array found in AI response for crossword.")
             
-            try:
-                ai_data = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON: {response_text}")
-                raise AIServiceError(f"Invalid JSON response: {str(e)}")
-            
-            logger.debug(f"AI response parsed: {ai_data}")
-            
-             # Validate response structure
-            if not isinstance(ai_data, dict) or 'words' not in ai_data:
-                raise AIServiceError("Invalid response format: missing 'words' key")
-            
-            word_list = ai_data.get("words", [])
-            if not isinstance(word_list, list) or not word_list:
-                raise AIServiceError("No words found in the AI response")
+            json_str = response_text[json_start:json_end]
+            word_list = json.loads(json_str)
 
-             # Additional validation before puzzle generation
-            valid_words = []
-            seen_words = set()
+            if len(word_list) < 10:
+                raise AIServiceError(f"AI generated only {len(word_list)} words, not enough for a puzzle.")
             
-            for entry in word_list:
-                if not isinstance(entry, dict) or 'word' not in entry or 'clue' not in entry:
-                    continue
-                    
-                word = str(entry['word']).upper()
-                if (
-                    word.isalpha() and
-                    3 <= len(word) <= 8 and
-                    word not in seen_words
-                ):
-                    seen_words.add(word)
-                    valid_words.append(entry)
-            
-            if len(valid_words) < 15:
-                raise AIServiceError(f"Insufficient valid words: {len(valid_words)} (minimum 15 required)")  
-                            
-            # Now pass the word list to your custom crossword generator.
-            # For example, using a 15x15 grid:
-            puzzle = generate_crossword_puzzle(word_list, width=15, height=15, max_attempts=3)
+            puzzle = generate_crossword_puzzle(word_list, width=15, height=15)
             return puzzle
 
         except Exception as e:
             logger.error(f"Error generating crossword: {str(e)}")
             return {'error': f"Generation failed: {str(e)}"}
         
-    def generate_lyrics_challenges(self, lyrics: str, num_challenges: int) -> List[Dict[str, Any]]:
+    def generate_lyrics_challenges(self, lyrics: str, num_challenges: int, song_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Generate multiple optimized lyrics challenges using AI"""
         if not lyrics.strip():
             raise ValueError("Lyrics cannot be empty")
         
-        prompt = f"""Analyze these lyrics and return {num_challenges} different challenge sections in English.
-        For each section, return a JSON object in an array.
-        
-        Return in this exact format:
-        [
-            {{
-                "selected_section": {{
-                    "start_index": 123,
-                    "end_index": 145,
-                    "text": "the selected portion of lyrics"
-                }},
-                "hint": "Brief hint about the missing section",
-                "difficulty": "easy/medium/hard",
-            }},
-            // ...more challenges
-        ]
-        
-        Selection criteria for each challenge:
-        1. Choose different sections of the lyrics (don't repeat)
-        2. Each section should be 15-20 words
-        3. Choose memorable or distinctive phrases
-        4. Prefer complete thoughts/phrases
-        5. Select sections with clear context from surrounding lyrics
-        6. Vary the difficulty levels
+        # The prompt itself does not need to change
+        prompt = f"""
+        CONTEXT:
+        The following are song lyrics:
+        ---
+        {lyrics}
+        ---
+
+        TASK:
+        Analyze the lyrics and identify {num_challenges} unique, memorable, and clear phrases to use for a "complete the lyrics" game.
+
+        RULES FOR EACH CHALLENGE:
+        1.  Select a short, contiguous section of lyrics to be the "missing part". This part should be between 5 and 10 words long.
+        2.  The missing part MUST be a complete or near-complete phrase that makes sense on its own.
+        3.  Provide the line of lyrics that comes directly BEFORE the missing part as "context_before".
+        4.  Provide the line of lyrics that comes directly AFTER the missing part as "context_after".
+        5.  The final output MUST be a single, valid JSON array of objects. Do not include any text outside of the JSON array.
+        6.  Each object must have these exact keys: "missing_portion", "context_before", "context_after".
         """
         
         try:
-            full_prompt = f"{prompt}\n\nLyrics to analyze: \n{lyrics}"
-            response_text = self._make_api_request(full_prompt)
+            response_text = self._make_api_request(prompt)
             
             json_start = response_text.find('[')
             json_end = response_text.rfind(']') + 1
-            if json_start >= 0 and json_end > json_start:
-                json_str = response_text[json_start:json_end]
-                challenges_data = json.loads(json_str)
-            else:
-                raise AIServiceError("No Valid JSON array found in response")
+            if json_start == -1 or json_end == 0:
+                raise AIServiceError("No Valid JSON array found in response for lyrics challenge")
             
-            challenges = []
-            for challenge_data in challenges_data:
-                # Validate each challenge
-                if not all(field in challenge_data for field in ["selected_section","hint","difficulty"]):
-                    continue
-                
-                section = challenge_data["selected_section"]
-                if not all(field in section for field in ["start_index", "end_index", "text"]):
-                    continue
-                
-                missing_portion = section["text"]
-                placeholder = " _____ " * (len(missing_portion.split()) // 2)
-                challenge_lyrics = lyrics.replace(missing_portion, placeholder)
-                
-                challenges.append({
-                    "complete_lyrics": lyrics,
-                    "challenge_lyrics": challenge_lyrics,
-                    "missing_portion": missing_portion,
-                    "hint": challenge_data["hint"],
-                    "difficulty": challenge_data["difficulty"],
-                    "word_count": len(missing_portion.split()),
-                })
-                
-            if not challenges:
+            json_str = response_text[json_start:json_end]
+            challenges_data = json.loads(json_str)
+            
+            # =======================================================
+            # THE FIX IS HERE: Attach the song_data to each challenge
+            # =======================================================
+            for challenge in challenges_data:
+                if isinstance(challenge, dict):
+                    challenge["song_data"] = song_data
+            
+            if not challenges_data:
                 raise AIServiceError("No valid challenges generated")
             
-            return challenges
+            return challenges_data
         
         except Exception as e:
             logger.error(f"Error generating lyrics challenges: {str(e)}")
             return [{"error": str(e)}]
-        
 class WordEntry:
     def __init__(self, word: str, clue: str):
         self.word = word.upper()
@@ -326,11 +283,8 @@ class WordEntry:
 
     @property
     def is_valid(self) -> bool:
-        return( bool(self.word and self.clue) and
-               self.word.isalpha() and
-               3 <= len(self.word) <= 8 and
-               any(direction in self.clue.lower() for direction in ["(across)", "(down)"])
-        )
+        return 4 <= len(self.word) <= 10
+    
     def to_dict(self) -> Dict[str, str]:
         return {
             "word": self.word,
@@ -347,8 +301,10 @@ class WordEntry:
         
         if not word or not clue:
             raise ValueError("Word and clue are required")
+        
+        sanitized_word = re.sub(r'[^A-Z]', '', word.upper())
             
-        return cls(word, clue)
+        return cls(sanitized_word, clue)
 
 class CrosswordGenerator:
     def __init__(self, words: List[Dict[str, str]], width: int = 15, height: int = 15):
@@ -370,80 +326,43 @@ class CrosswordGenerator:
                     self.words.append(word_entry)
             except (ValueError, AttributeError) as e:
                 logger.warning(f"Skipping invalid word entry: {word_dict}. Error: {str(e)}")
+                continue
         
         # Sort words by scoring them based on multiple factors
-        self.words.sort(key=self._score_word, reverse=True)
+        self.words.sort(key=lambda x: len(x.word), reverse=True)
         
         # Ensure minimum word count (reduced for better success rate)
         if len(self.words) < 10:
             raise ValueError(f"Insufficient valid words: {len(self.words)} (minimum 10 required)")
 
-    def _score_word(self, word_entry: WordEntry) -> float:
-        """Score words based on length and letter frequency."""
-        word = word_entry.word
-        
-        # Common letters in English that often create intersections
-        common_letters = 'ETAOINSHRDL'
-        common_letter_score = sum(2 for letter in word if letter in common_letters)
-        
-        # Length score (prefer medium length words)
-        length_score = 10 - abs(5 - len(word))  # 5 letters is optimal
-        
-        # Unique letters score
-        unique_letters_score = len(set(word))
-        
-        return common_letter_score + length_score + unique_letters_score
-    
-    def validate_placement(self, word_entry: WordEntry, direction: str) -> bool:
-        """Validate if the word can be placed in the specified direction based on its clue."""
-        clue = word_entry.clue.lower()
-        return (direction == "across" and "(across)" in clue) or \
-               (direction == "down" and "(down)" in clue)
-
     def find_intersections(self, word_entry: WordEntry) -> List[Dict[str, Any]]:
-        """Enhanced intersection finding with better positioning strategy."""
         positions = []
         word = word_entry.word
         
-        # For first word, try multiple starting positions
-        if all(cell is None for row in self.grid for cell in row):
-            start_positions = [
-                (self.width // 4, self.height // 2),
-                (self.width // 2, self.height // 2),
-                (self.width // 3, self.height // 2)
-            ]
-            
-            for x, y in start_positions:
-                if self.validate_placement(word_entry, "across"):
-                    positions.append({"x": x, "y": y, "direction": "across"})
-                if self.validate_placement(word_entry, "down"):
-                    positions.append({"x": x, "y": y, "direction": "down"})
+        if not self.placements: # For the first word
+            # Try placing the first word horizontally in the middle
+            x = (self.width - len(word)) // 2
+            y = self.height // 2
+            positions.append({"x": x, "y": y, "direction": "across", "intersections": 0})
             return positions
 
-        # Find intersections with looser constraints
-        for y in range(self.height):
-            for x in range(self.width):
-                if self.grid[y][x] is not None:
-                    # Try both directions for each intersection point
-                    for direction in ["across", "down"]:
-                        if not self.validate_placement(word_entry, direction):
-                            continue
-                            
-                        # Try placing word at different positions relative to intersection
-                        for i, letter in enumerate(word):
-                            if letter == self.grid[y][x]:
-                                pos_x = x - i if direction == "across" else x
-                                pos_y = y if direction == "across" else y - i
-                                
-                                if self.can_place(word, pos_x, pos_y, direction):
-                                    positions.append({
-                                        "x": pos_x,
-                                        "y": pos_y,
-                                        "direction": direction,
-                                        "intersections": self._count_intersections(word, pos_x, pos_y, direction)
-                                    })
+        # Find intersections with existing words
+        for y_grid in range(self.height):
+            for x_grid in range(self.width):
+                if self.grid[y_grid][x_grid] is not None:
+                    for i, letter in enumerate(word):
+                        if letter == self.grid[y_grid][x_grid]:
+                            # Try placing ACROSS
+                            pos_x_across = x_grid - i
+                            if self.can_place(word, pos_x_across, y_grid, "across"):
+                                intersections = self._count_intersections(word, pos_x_across, y_grid, "across")
+                                positions.append({"x": pos_x_across, "y": y_grid, "direction": "across", "intersections": intersections})
+                            # Try placing DOWN
+                            pos_y_down = y_grid - i
+                            if self.can_place(word, x_grid, pos_y_down, "down"):
+                                intersections = self._count_intersections(word, x_grid, pos_y_down, "down")
+                                positions.append({"x": x_grid, "y": pos_y_down, "direction": "down", "intersections": intersections})
 
-        # Sort positions by number of intersections
         positions.sort(key=lambda p: p["intersections"], reverse=True)
         return positions
     
@@ -557,44 +476,30 @@ class CrosswordGenerator:
 def format_grid_for_frontend(puzzle: Dict[str, Any]) -> Dict[str, Any]:
     """Format the puzzle data for frontend display with enhanced metadata."""
     try:
-        formatted_grid = []
-        numbered_cells = {
-            (word["position"]["x"], word["position"]["y"]): word["number"]
-            for word in puzzle["words"]
-        }
+        grid_data = puzzle["grid"]
+        words_data = puzzle["words"]
         
-        for y, row in enumerate(puzzle["grid"]):
+        formatted_grid = []
+        for y, row in enumerate(grid_data):
             formatted_row = []
             for x, cell in enumerate(row):
                 cell_data = {
-                    "letter": cell if cell is not None else "",
-                    "isActive": cell is not None,
+                    "char": cell, # The correct letter for this cell
+                    "number": None,
                     "isBlack": cell is None,
-                    "x": x,
-                    "y": y,
-                    "number": numbered_cells.get((x, y))
                 }
                 formatted_row.append(cell_data)
             formatted_grid.append(formatted_row)
         
-        # Format word data for frontend
-        formatted_words = []
-        for word in puzzle["words"]:
-            formatted_word = {
-                "word": word["word"],
-                "clue": word["clue"],
-                "number": word["number"],
-                "position": {
-                    "x": word["position"]["x"],
-                    "y": word["position"]["y"],
-                    "direction": word["position"]["direction"]
-                }
-            }
-            formatted_words.append(formatted_word)
-            
+        # Format word data and add numbers to the grid
+        for word_info in words_data:
+            x, y = word_info["position"]["x"], word_info["position"]["y"]
+            if formatted_grid[y][x]["number"] is None:
+                 formatted_grid[y][x]["number"] = word_info["number"]
+        
         return {
             "grid": formatted_grid,
-            "words": formatted_words,
+            "words": words_data,
             "dimensions": puzzle["dimensions"]
         }
     except Exception as e:

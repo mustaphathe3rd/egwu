@@ -1,284 +1,158 @@
-
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2, Mic, Volume2, Play, Pause } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Loader2, Home, RefreshCw, Trophy } from 'lucide-react';
 import api from '@/services/api';
+import { useNavigate } from 'react-router-dom';
 
-interface SongData {
-  name: string;
-  artist: string;
-  album_image: string;
-  spotify_id: string;
-  track_uri: string;
-}
-
-interface Challenge {
-  song_data: SongData;
-  complete_lyrics: string;
-  challenge_lyrics: string;
-  missing_portion: string;
-}
-
-interface GameState {
-  challenge: Challenge[];
-  currentChallengeIndex: number;
-  inputType: 'text' | 'voice';
-  attempts: number
-  maxAttempts: number;
-  songPreview: string | null;
-  lyricsContext: string;
-  lyricsPrompt: string;
-  feedback: string | null;
-  isCorrect: boolean | null;
-  completed: boolean;
-}
-
-interface LyricsGameProps {
-  sessionId: string;
-  initialState: GameState;
-  onGameComplete: () => void;
-  inputType?: 'text' | 'voice';
-}
-
-const LyricsGame = ({ 
-  sessionId, 
-  initialState, 
-  onGameComplete, 
-  inputType = 'text' 
-}: LyricsGameProps) => {
-  const [gameState, setGameState] = useState<GameState>(initialState);
-  const [answer, setAnswer] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [player, setPlayer] = useState<Spotify.Player | null>(null);
-  const currentChallenge = gameState.challenge[gameState.currentChallengeIndex] || {
-    song_data: {
-      name: 'Unknown Song',
-      artist: 'Unknown Artist',
-      album_image: '',
-      spotify_id: '',
-      track_uri: ''
-    },
-    complete_lyrics: '',
-    challenge_lyrics: '',
-    missing_portion: ''
-  };
-
-  useEffect(() => {
-    console.log('Initial State:', initialState);
-  }, [initialState]);
-  // Initialize Spotify Web Playback SDK
-  React.useEffect(() => {
-    if (!window.Spotify) {
-      const script = document.createElement('script');
-      script.src = 'https://sdk.scdn.co/spotify-player.js';
-      script.async = true;
-      document.body.appendChild(script);
-
-      window.onSpotifyWebPlaybackSDKReady = () => {
-        const spotifyPlayer = new window.Spotify.Player({
-          name: 'Lyrics Game Player',
-          getOAuthToken: cb => {
-            // Get token from your backend
-            api.get('/auth/spotify/token/').then(response => {
-              cb(response.data.token);
-            });
-          }
-        });
-
-        spotifyPlayer.connect();
-        setPlayer(spotifyPlayer);
-      };
-    }
-  }, []);
-
-  const togglePlayback = useCallback(async () => {
-    if (!player) return;
-
-    const currentSong = gameState.challenge[gameState.currentChallengeIndex].song_data;
-
-    if (!isPlaying) {
-      await player.resume();
-      // Start playing from current song's URI
-      await player.play({
-        uris: [currentSong.track_uri],
-        position_ms: 0
-      });
-      // Stop after 30 seconds (preview length)
-      setTimeout(() => {
-        player.pause();
-        setIsPlaying(false);
-      }, 30000);
-    } else {
-      await player.pause();
-    }
-    setIsPlaying(!isPlaying);
-  }, [player, isPlaying,gameState.challenge, gameState.currentChallengeIndex]);
-
-  const handleSubmit = useCallback(async () => {
-    if (!answer.trim()) return;
-    
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await api.post(`/games/api/sessions/${sessionId}/submitanswer/`, {
-       answer
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to submit answer');
-      }
-
-      const data = await response.json();
-      setGameState(data.current_state);
-      
-      if (data.current_state.completed) {
-        onGameComplete();
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
-      setAnswer('');
-    }
-  }, [answer, sessionId, onGameComplete]);
-
-  const handleVoiceRecord = useCallback(async () => {
-    try {
-      setIsRecording(true);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      const audioChunks: BlobPart[] = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        audioChunks.push(event.data);
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-        const formData = new FormData();
-        formData.append('audio', audioBlob);
-
-        try {
-          const response = await api.post(`/games/api/sessions/${sessionId}/submit_voice_answer/`, {
-            body: formData
-          });
-
-          if (!response.ok) {
-            throw new Error('Failed to process voice input');
-          }
-
-          const data = await response.json();
-          setGameState(data.current_state);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to process voice input');
-        }
-      };
-
-      mediaRecorder.start();
-      setTimeout(() => {
-        mediaRecorder.stop();
-        stream.getTracks().forEach(track => track.stop());
-        setIsRecording(false);
-      }, 5000);
-    } catch (err) {
-      setError('Failed to access microphone');
-      setIsRecording(false);
-    }
-  }, [sessionId]);
-
-  
-
-  return (
-    <Card className="w-full max-w-2xl mx-auto bg-white/10 border-0">
-      <CardHeader className="flex flex-row justify-between items-start">
-        <CardTitle className="text-2xl font-bold text-white flex items-center gap-2">
-          <Volume2 className="h-6 w-6" />
-          Lyrics Challenge
-        </CardTitle>
-        <div className="flex flex-col items-end">
-          <div className="flex items-center gap-4">
-            <div className="text-right">
-              <h3 className="font-semibold text-white">{currentChallenge?.song_data?.name || 'Unknown Song'}</h3>
-              <p className="text-sm text-gray-300">{currentChallenge?.song_data?.artist || 'Unknown Artist'}</p>
-            </div>
-            <img 
-              src={currentChallenge?.song_data?.album_image} 
-              alt="Album Cover"
-              className="w-16 h-16 rounded-lg shadow-lg"
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={togglePlayback}
-            className="mt-2"
-          >
-            {isPlaying ? (
-              <Pause className="h-4 w-4 mr-2" />
-            ) : (
-              <Play className="h-4 w-4 mr-2" />
-            )}
-            {isPlaying ? 'Pause Preview' : 'Play Preview'}
-          </Button>
+// New, dedicated component for the Game Over screen
+const LyricsGameOver = ({ score, onRestart, onDashboard }) => {
+    return (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+            <Card className="w-full max-w-md text-center p-6 bg-gray-900 text-white border-green-500 shadow-lg">
+                <CardHeader>
+                    <Trophy className="mx-auto h-16 w-16 text-yellow-400" />
+                    <CardTitle className="text-3xl font-bold mt-4">Challenge Complete!</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="bg-black/30 p-4 rounded-lg">
+                        <p className="text-md text-gray-400">Final Score</p>
+                        <p className="text-5xl font-bold text-green-400">{score}</p>
+                    </div>
+                    <div className="flex justify-center gap-4 pt-4">
+                        <Button onClick={onRestart} variant="outline" size="lg">
+                            <RefreshCw className="mr-2 h-5 w-5" />
+                            Play Again
+                        </Button>
+                        <Button onClick={onDashboard} size="lg" className="bg-green-600 hover:bg-green-700">
+                            <Home className="mr-2 h-5 w-5" />
+                            Dashboard
+                        </Button>
+                    </div>
+                </CardContent>
+            </Card>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        <div className="text-lg text-white space-y-4">
-          <p>{gameState.lyricsContext}</p>
-          <p className="font-bold">Complete the lyrics:</p>
-          <p>{gameState.lyricsPrompt}</p>
-        </div>
-
-        <div className="flex gap-4">
-          <Input
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            placeholder="Type the next line..."
-            className="flex-1"
-            disabled={loading || isRecording}
-          />
-          
-          {inputType === 'voice' && (
-            <Button
-              variant="outline"
-              onClick={handleVoiceRecord}
-              disabled={loading || isRecording}
-              className={isRecording ? 'bg-red-500/20' : ''}
-            >
-              <Mic className={`h-4 w-4 ${isRecording ? 'text-red-500' : ''}`} />
-            </Button>
-          )}
-          
-          <Button 
-            onClick={handleSubmit}
-            disabled={loading || isRecording || !answer.trim()}
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Submit'}
-          </Button>
-        </div>
-
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {gameState.feedback && (
-          <Alert variant={gameState.isCorrect ? 'success' : 'error'}>
-            <AlertDescription>{gameState.feedback}</AlertDescription>
-          </Alert>
-        )}
-      </CardContent>
-    </Card>
-  );
+    );
 };
 
+
+const LyricsGame = ({ sessionId, initialState }) => {
+    const [gameState, setGameState] = useState(initialState);
+    const [answer, setAnswer] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [feedback, setFeedback] = useState<{ message: string; isCorrect: boolean } | null>(null);
+    const [isGameOver, setIsGameOver] = useState(false); // State to control the Game Over screen
+    const navigate = useNavigate();
+
+    const currentChallenge = useMemo(() => {
+        if (!gameState || !gameState.challenge) return null;
+        return gameState.challenge[gameState.current_challenge_index];
+    }, [gameState]);
+
+    const handleSubmit = useCallback(async () => {
+        if (!answer.trim()) return;
+        setLoading(true);
+        setError(null);
+        setFeedback(null);
+
+        try {
+            const response = await api.post(`/games/api/sessions/${sessionId}/submit-answer/`, {
+                answer
+            });
+            const result = response.data;
+            setFeedback({ message: result.feedback, isCorrect: result.is_correct });
+
+            setTimeout(() => {
+                if (result.completed) {
+                    // =======================================================
+                    // THE FIX IS HERE: Show the Game Over component
+                    // =======================================================
+                    setGameState(prev => ({...prev, score: result.score})); // Set final score
+                    setIsGameOver(true);
+                } else {
+                    setGameState(result.new_state);
+                    setAnswer('');
+                    setFeedback(null);
+                }
+            }, 2500); // 2.5 second delay
+
+        } catch (err: any) {
+            setError(err.response?.data?.error || 'Failed to submit answer.');
+        } finally {
+            setLoading(false);
+        }
+    }, [answer, sessionId, navigate]);
+
+    if (!currentChallenge) {
+        return <div className="text-white p-8">Loading Lyrics Challenge...</div>;
+    }
+
+    if (isGameOver) {
+        return (
+            <LyricsGameOver
+                score={gameState.score}
+                onRestart={() => window.location.reload()} // Simple refresh to start a new game
+                onDashboard={() => navigate('/games/dashboard')}
+            />
+        );
+    }
+
+    return (
+        <Card className="w-full max-w-3xl mx-auto bg-black/20 border-white/10 text-white shadow-xl">
+            <CardHeader className="flex flex-row justify-between items-start p-6">
+                <CardTitle className="text-2xl font-bold flex items-center gap-3">
+                    <span className="text-green-400 text-3xl">🎤</span> Lyrics Challenge
+                </CardTitle>
+                <div className="flex items-center gap-4 text-right">
+                    <div>
+                        <h3 className="font-semibold">{currentChallenge.song_data.name}</h3>
+                        <p className="text-sm text-gray-400">{currentChallenge.song_data.artist}</p>
+                    </div>
+                    <img
+                        src={currentChallenge.song_data.album_image}
+                        alt="Album Cover"
+                        className="w-16 h-16 rounded-lg"
+                    />
+                </div>
+            </CardHeader>
+            <CardContent className="space-y-6 p-6">
+                <div className="bg-black/30 p-6 rounded-lg text-center space-y-3">
+                    <p className="text-lg text-gray-400 italic">"{currentChallenge.context_before}"</p>
+                    
+                    <div className="py-4">
+                        <Input
+                            value={answer}
+                            onChange={(e) => setAnswer(e.target.value)}
+                            placeholder="Type the missing line..."
+                            className="flex-1 bg-gray-800 border-gray-700 text-white text-center text-xl h-14"
+                            disabled={loading || !!feedback}
+                            onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
+                        />
+                    </div>
+
+                    <p className="text-lg text-gray-400 italic">"{currentChallenge.context_after || '...'}"</p>
+                </div>
+
+                <Button onClick={handleSubmit} disabled={loading || !answer.trim() || !!feedback} className="w-full h-12 text-lg bg-green-600 hover:bg-green-700">
+                    {loading ? <Loader2 className="h-6 w-6 animate-spin" /> : 'Submit'}
+                </Button>
+
+                {error && (
+                    <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
+                )}
+
+                {feedback && (
+                    <Alert variant={feedback.isCorrect ? "default" : "destructive"} className={feedback.isCorrect ? "bg-green-500/20 border-green-500" : ""}>
+                         <AlertTitle className="font-bold">{feedback.isCorrect ? "Correct!" : "Not Quite!"}</AlertTitle>
+                        <AlertDescription>{feedback.message}</AlertDescription>
+                    </Alert>
+                )}
+            </CardContent>
+        </Card>
+    );
+};
 
 export default LyricsGame;

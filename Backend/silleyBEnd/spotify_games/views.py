@@ -10,7 +10,7 @@ from django.views.generic import TemplateView
 from django.template.exceptions import TemplateDoesNotExist
 from django.http import HttpResponseServerError
 from .models import GameSession, GameStatistics, GameLeaderboard
-from .serializers import GameSessionSerializer, ArtistGuessInputSerializer, GuessSubmissionResponseSerializer
+from .serializers import GameSessionSerializer, ArtistGuessInputSerializer, GuessResponseSerializer, GameStateSerializer
 from .services.cache_service import GameCacheService
 import logging
 from .permission import ValidSpotifyTokenRequired, IsGameSessionOwner
@@ -86,41 +86,24 @@ class GameSessionViewSet(viewsets.ModelViewSet):
             )
             
         try:
-            # # Check for existing active session in cache
-            # existing_session = self.cache_service.get_game_session(request.user.id.game_type)
-            
-            # if existing_session:
-            #     # Return cached session if it exists and is still valid
-            #     return Response(existing_session)
-            
             # Create new session
             session = GameSession.objects.create(
                 user=request.user,
-                game_type= game_type,
-                max_tries=10 if game_type =='guess_artist' else 1 
+                game_type= game_type, 
             )
-            
             
             # Initialize game
             game = self._get_game_instance(session)
             initial_state = game.initialize_game()
             
-            logger.debug(f"Initia State: {initial_state}")
+            logger.debug(f"Initial State: {initial_state}")
         
             # Prepare response data
             response_data = {
                 'session': GameSessionSerializer(session).data,
-                'current_state': initial_state
             }
             
             logger.debug(f"serializer response data: {response_data}")
-            
-            #cache the new session
-            # self.cache_service.cache_game_session(
-            #     request.user.id,
-            #     session.game_type,
-            #     response_data,
-            # )
         
             # Track game start - Create a GameEvent instance instead of a dict
             game_event = GameEvent(
@@ -141,8 +124,9 @@ class GameSessionViewSet(viewsets.ModelViewSet):
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-    @action(detail=True, methods=['post'])
-    def submitanswer(self, request, pk=None):
+            
+    @action(detail=True, methods=['post'],url_path='submit-answer')
+    def submit_answer(self, request, pk=None):
         """Submit an answer for the current game session."""
         session = self.get_object()
         if session.completed:
@@ -154,7 +138,7 @@ class GameSessionViewSet(viewsets.ModelViewSet):
         try: 
             # Get current game state from cache
             current_state = self.cache_service.get_game_session(
-                request.user.id,
+                session.id,
                 session.game_type
             )
             
@@ -175,16 +159,16 @@ class GameSessionViewSet(viewsets.ModelViewSet):
             result = game.validate_answer({'answer': answer})
             
             # Update cache with new state
-            updated_state = {
-                'session': GameSessionSerializer(session).data,
-                'current_state': game.get_current_state()
-            }
+            # updated_state = {
+            #     'session': GameSessionSerializer(session).data,
+            #     'current_state': game.get_current_state()
+            # }
             
-            self.cache_service.cache_game_session(
-                request.user.id,
-                session.game_type,
-                updated_state
-            )
+            # self.cache_service.cache_game_session(
+            #     session.id,
+            #     session.game_type,
+            #     updated_state
+            # )
             
             # Track answer submission
             self.analytics.track_event(GameEvent(
@@ -198,7 +182,7 @@ class GameSessionViewSet(viewsets.ModelViewSet):
                 }
             ))
             
-            return Response(updated_state)
+            return Response(result)
         
         except GameError as e:
             logger.error(f"Error processing answer: {str(e)}")
@@ -206,7 +190,6 @@ class GameSessionViewSet(viewsets.ModelViewSet):
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
-            
     @action(detail=True, methods=['get'])
     def get_hint(self, request, pk=None):
         """Get a hint for guess_artist game mode."""
@@ -250,7 +233,7 @@ class GameSessionViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': 'Game session already completed'},
                 status=status.HTTP_400_BAD_REQUEST
-                )
+                )       
         
         try:
             audio_file = request.FILES.get('audio')
@@ -270,7 +253,7 @@ class GameSessionViewSet(viewsets.ModelViewSet):
             }
             
             self.cache_service.cache_game_session(
-                request.user.id,
+                request.session.id,
                 session.game_type,
                 updated_state
             )
@@ -295,9 +278,7 @@ class GameSessionViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
-            )            
-            
-            
+            )                
     @action(detail=True, methods=['post'])
     def submit_guess(self, request, pk=None):
         """Submit a guess for the guess_artist game mode."""
@@ -323,7 +304,7 @@ class GameSessionViewSet(viewsets.ModelViewSet):
         try:    
             # Get current game state from cache
             current_state = self.cache_service.get_game_session(
-                request.user.id,
+                session.id,
                 game_type,
             )
             
@@ -347,30 +328,18 @@ class GameSessionViewSet(viewsets.ModelViewSet):
             if 'error' in feedback:
                 return Response(feedback, status=status.HTTP_400_BAD_REQUEST)
             
-            session.current_tries += 1
-            if feedback['is_correct']:
-                session.score += max(1, session.max_tries - session.current_tries)
-                session.completed = True
-                session.end_time = timezone.now()
-            elif session.current_tries >= session.max_tries:
-                session.completed = True
-                session.end_time = timezone.now()
-            session.save()
+            # retrueve updated game state
+            game_state = session.gamestate.first().current_state
             
             response_data = {
-                'feedback': feedback,
-                'session_state': {
-                    'tries_left': session.max_tries - session.current_tries,
-                    'is_complete': session.completed, 
-                    'score': session.score
-                },
-                'revealed_info': current_state.get('revealed_info', {})
+                "state": game_state,
+                "feedback": feedback
             }
             
             self.cache_service.cache_game_session(
-                request.user.id,
+                session.id,
                 game_type,
-                response_data
+                game_state,
             )
             
             # Track guess submission
@@ -386,14 +355,7 @@ class GameSessionViewSet(viewsets.ModelViewSet):
                 }
             ))
                         
-            # Validate response format
-            response_serializer = GuessSubmissionResponseSerializer(data=response_data)
-            if not response_serializer.is_valid():
-                logger.error("Serializer errors: %s", response_serializer.errors)
-                return Response(response_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            response_serializer.is_valid(raise_exception=True)
-            
-            return Response(response_serializer.validated_data)  
+            return Response(response_data)
     
         except GameError as e:
             logger.error(f"Error processing guess: {str(e)}")
@@ -425,34 +387,40 @@ class GameSessionViewSet(viewsets.ModelViewSet):
         
         return Response(list(artists))
     
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], url_path='restart-game')
     def restart_game(self, request, pk=None):
         """Restart the current game session."""
         try:
-            old_session = self.get_object()
+            session = self.get_object()
             
-            # Create new session with same game type
-            new_session = GameSession.objects.create(
-                user=request.user,
-                game_type=old_session.game_type,
-                max_tries=old_session.max_tries
-            )
+            if session.user != request.user:
+                return Response(
+                    {'error': 'You do not have permission to restart this game.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            game = self._get_game_instance(session)
+            # This function correctly resets the DB and returns the new state
+            new_game_state = game.restart_game()
             
-            # Initialize new game
-            game = self._get_game_instance(new_session)
-            initial_state = game.initialize_game()
+            # =======================================================
+            # THE FIX IS HERE
+            # Instead of serializing the old session, we will directly
+            # return the fresh game state in the expected format.
+            # =======================================================
+            response_data = {
+                "state": new_game_state
+            }
             
-            return Response({
-                'session': GameSessionSerializer(new_session).data,
-                'current_state': initial_state
-            })
+            return Response(response_data, status=status.HTTP_200_OK)
+
         except GameError as e:
             logger.error(f"Error restarting game: {str(e)}")
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
-            )   
-            
+            )
+                
     @action(detail=False, methods=['get'])
     def leaderboard(self, request):
         """Get leaderboard for a specific game type."""
@@ -481,3 +449,12 @@ class GameSessionViewSet(viewsets.ModelViewSet):
         analytics_service = AnalyticsService(request.user)
         stats = analytics_service.get_user_statistics()
         return Response(stats)
+    
+    @action(detail=False, methods=['get'])
+    def state(self, request, pk=None):
+        """Direct state endpoint for debugging"""
+        session = self.get_object()
+        game_state = session.gamestate.first()
+        if not game_state or not game_state.current_state:
+            return Response({'error': 'State not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(game_state.current_state)

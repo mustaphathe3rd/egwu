@@ -145,7 +145,6 @@ class SpotifyCallbackView(View):
         cache_key = f"spotify_processing_{user.id}"
         
         try:
-            # Get and validate last_updated timestamp
             last_updated = await sync_to_async(lambda: user.last_updated)()
             logger.info(f"User {user.id} last updated: {last_updated}")
             if last_updated and not timezone.is_aware(last_updated):
@@ -153,35 +152,35 @@ class SpotifyCallbackView(View):
             
             one_week_ago = timezone.now() - timedelta(weeks=1)
             
-            # If data is fresh (less than a week old), skip processing
+            # Check if data is fresh
             if last_updated and last_updated > one_week_ago:
-                logger.info(f"User {user.id} data is fresh, skipping processing")
-                user.is_data_processed = True
-                await sync_to_async(user.save)()
+                logger.info(f"User {user.id} data is fresh, skipping processing.")
                 
-                # Set cache to complete immediately since no processing is needed
+                # =======================================================
+                # THE FIX IS HERE: Only save if the flag needs changing
+                # =======================================================
+                if not user.is_data_processed:
+                    user.is_data_processed = True
+                    await sync_to_async(user.save)()
+                
+                # Set cache to complete immediately
                 cache.set(cache_key, {
                     'status': 'complete',
                     'redirect_url': 'http://localhost:5173/games/dashboard',
                 }, timeout=3600)
-                logger.info(f"Data processing completed for user {user.id}")
+                logger.info(f"Cache set to complete for user {user.id} (skipped processing).")
                 return
-            
+
             # If data is old or doesn't exist, process it
-            logger.info(f"User {user.id} data needs updating, starting processing")
-            
-            # Set initial processing status
-            cache.set(cache_key, {
-                'status': 'processing'
-            }, timeout=3600)
-            logger.debug(f"Cache set to processing for user {user.id}")
+            logger.info(f"User {user.id} data is old or missing, starting processing...")
+            cache.set(cache_key, {'status': 'processing'}, timeout=3600)
             
             # Process the data
             await self.process_user_data(token_info, user)
             
             # Update user status after successful processing
             user.is_data_processed = True
-            user.last_updated = timezone.now()
+            user.last_updated = timezone.now() # This explicitly sets the new timestamp
             await sync_to_async(user.save)()
             
             # Update cache with completion status
@@ -190,19 +189,11 @@ class SpotifyCallbackView(View):
                 'redirect_url': 'http://localhost:5173/games/dashboard',
             }, timeout=3600)
             logger.info(f"Data processing completed for user {user.id}")
-            logger.debug(f"Cache updated to complete for user {user.id}")
             
         except Exception as e:
             logger.error(f"Error processing user data: {e}", exc_info=True)
-            # Set error status in cache
-            cache.set(cache_key, {
-                'status': 'error',
-                'error': str(e)
-            }, timeout=3600)
-            logger.error(f"Cache updated to error for user {user.id}: {str(e)}")
-            raise  # Re-raise to be caught by outer try-except
-
-
+            cache.set(cache_key, {'status': 'error', 'error': str(e)}, timeout=3600)
+            raise
     async def get(self, request):
         try:
             # Extract code from query parameters
