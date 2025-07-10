@@ -157,4 +157,12 @@ Future plans for **ègwu** include:
 ---
 
 
+## How to run on your local device
+- Clone the repo
+- run pip freeze requirements.txt
+- run pip install requirements.txt on a venv on the silleyBEnd/silleyBEnd directory
+- run npm install on the 'frontend/egwu' dir
+- to run the backend server : uvicorn silleyBEnd.asgi:application --reload
+- to run the frontend: npm run dev
+voila! 
 
