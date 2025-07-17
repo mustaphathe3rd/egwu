@@ -164,5 +164,5 @@ Future plans for **ègwu** include:
 - run npm install on the 'frontend/egwu' dir
 - to run the backend server : uvicorn silleyBEnd.asgi:application --reload
 - to run the frontend: npm run dev
-voila! 
+- voila! 
 
